@@ -1,0 +1,27 @@
+# HTTP client library for making web requests to job sites
+requests>=2.32.4
+# HTML/XML parsing for extracting job data from web pages
+beautifulsoup4>=4.13.5
+# Fast XML/HTML processing library (required by beautifulsoup4 for lxml parser)
+lxml>=6.0.1
+# Low-level HTTP client with connection pooling and retry logic
+urllib3>=2.2.3
+
+# Selenium WebDriver for automating browser interactions (LinkedIn, CareerViet)
+selenium>=4.0.0
+
+# Chrome/Chromium driver management (auto-download and version management)
+webdriver-manager>=4.0.0
+
+# Undetected ChromeDriver to bypass bot detection on websites
+undetected-chromedriver>=3.5.0
+
+# Generate random user agents to avoid IP blocking and detection
+fake-useragent>=1.4.0
+# Data manipulation, cleaning, and export to CSV/JSON/Excel
+pandas>=2.1.0
+
+# Excel file format support (.xlsx file creation and manipulation)
+openpyxl>=3.1.5
+# Multi-site job scraper (used for LinkedIn and other job boards)
+python-jobspy
