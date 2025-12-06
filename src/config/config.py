@@ -31,4 +31,8 @@ DEFAULT_CONFIG = {
     "linkedin_location": "Vietnam",
     "linkedin_results_wanted": 50,
     "linkedin_hours_old": 72,
+    # Cấu hình TopCV
+    "topcv_keywords": ["Data Engineer", "Data Analyst", "Software Engineer"],
+    "topcv_start_page": 1,
+    "topcv_end_page": 3,
 }
