@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from crawler.itviec_crawler import ITViecCrawler  # type: ignore
 from crawler.linkedin_crawler import LinkedInCrawler  # type: ignore
+from crawler.topcv_crawler import TopCVCrawler  # type: ignore
 from storage.drive_uploader import GoogleDriveUploader  # type: ignore
 
 
@@ -103,6 +104,44 @@ def scrape_linkedin(config: Dict) -> List[pd.DataFrame]:
     
     return dataframes
 
+def scrape_topcv(config: Dict) -> List[pd.DataFrame]:
+    """
+    Scrape job data từ TopCV cho tất cả keywords
+    
+    :param config: Dictionary cấu hình chứa topcv_keywords và các tham số khác
+    :return: List các DataFrame chứa dữ liệu job từ TopCV
+    """
+    dataframes: List[pd.DataFrame] = []
+    
+    print("\n🔍 Scraping TopCV...")
+    keywords = config.get("topcv_keywords", [])
+    start_page = config.get("topcv_start_page", 1)
+    end_page = config.get("topcv_end_page", 3)
+    output_path = config.get("output_folder", "src/data")
+    
+    for keyword in keywords:
+        print(f"   Keyword: '{keyword}'")
+        try:
+            crawler = TopCVCrawler(
+                output_path=output_path,
+                keyword=keyword,
+                start_page=start_page,
+                end_page=end_page
+            )
+            df = crawler.crawl()
+            
+            if df is not None and not df.empty:
+                df['source'] = 'TopCV'
+                dataframes.append(df)
+                print(f"   ✅ Crawled {len(df)} jobs")
+            else:
+                print(f"   ⚠️  Không tìm thấy job cho keyword '{keyword}'")
+                
+        except Exception as e:
+            print(f"   ❌ Lỗi khi scrape TopCV với keyword '{keyword}': {e}")
+            continue
+    
+    return dataframes
 
 def save_data_files(dataframe: pd.DataFrame, output_folder: str, basename: str) -> Dict[str, str]:
     """
@@ -158,6 +197,10 @@ def scrape(config: Dict) -> Optional[str]:
         # Scrape từ LinkedIn
         linkedin_data = scrape_linkedin(config)
         all_dataframes.extend(linkedin_data)
+
+        # Scrape từ TopCV
+        topcv_data = scrape_topcv(config)
+        all_dataframes.extend(topcv_data)
         
         # Kiểm tra xem có dữ liệu không
         if not all_dataframes:
