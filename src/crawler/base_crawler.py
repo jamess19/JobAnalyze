@@ -1,12 +1,9 @@
 """
 Base Crawler - Lớp cơ sở cho tất cả crawlers
 """
-import csv
-import json
-from datetime import datetime, date
-from typing import List, Dict, Any, Literal
 from abc import ABC, abstractmethod
 import pandas as pd
+from middleware.logging import LoggerSetup
 
 class BaseCrawler(ABC):
     """Lớp cơ sở cho crawler, định nghĩa interface chung"""
@@ -20,6 +17,7 @@ class BaseCrawler(ABC):
         self.end_page = end_page
         self.data = pd.DataFrame()
         self.base_url = ""
+        self.logger = LoggerSetup.setup_logger(__name__)
 
     @abstractmethod
     def crawl(self) -> pd.DataFrame:

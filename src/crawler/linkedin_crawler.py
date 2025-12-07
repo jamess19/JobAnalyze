@@ -45,7 +45,7 @@ class LinkedInCrawler(BaseCrawler):
         # Create output directory if not exists
         if not os.path.exists(output_path):
             os.makedirs(output_path)
-            print(f"Created directory: {output_path}")
+            self.logger.info(f"Created directory: {output_path}")
 
     def build_list_urls(self) -> List[str]:
         """
@@ -60,8 +60,8 @@ class LinkedInCrawler(BaseCrawler):
         Crawl toan bo du lieu job tu LinkedIn
         :return: DataFrame chua du lieu job
         """
-        print(
-            f"Dang crawl LinkedIn jobs cho '{self.search_term}' tai '{self.location}'..."
+        self.logger.info(
+            f"Crawling LinkedIn jobs for '{self.search_term}' at '{self.location}'..."
         )
 
         try:
@@ -75,17 +75,17 @@ class LinkedInCrawler(BaseCrawler):
             )
 
             if jobs is None or len(jobs) == 0:
-                print("Khong tim thay job nao")
+                self.logger.info("No jobs found")
                 return None
 
-            print(f"Tim thay {len(jobs)} jobs")
+            self.logger.info(f"Found {len(jobs)} jobs")
 
             self.data = jobs
-            print(f"Hoan thanh! Da crawl {len(jobs)} job")
+            self.logger.info(f"Finished! Crawled {len(jobs)} jobs")
             return jobs
 
         except Exception as e:
-            print(f"[ERROR] Loi khi crawl LinkedIn: {e}")
+            self.logger.error(f"Error crawling LinkedIn: {e}")
             return pd.DataFrame()
 
     def save_raw_data(self, filename: str = None, file_type: str = "csv") -> str:
@@ -132,10 +132,10 @@ class LinkedInCrawler(BaseCrawler):
                 self.data.to_excel(
                     os.path.join(self.output_path, filename), index=False
                 )
-            print(f"✅ Lưu dữ liệu thành công: {filepath} ({len(self.data)} rows)")
+            self.logger.info(f"Successfully saved data to {filepath} ({len(self.data)} rows)")
             return filepath
         except Exception as e:
-            print(f"❌ Lỗi khi lưu dữ liệu: {e}")
+            self.logger.error(f"Error saving data: {e}")
             return None
 
 
@@ -155,10 +155,10 @@ if __name__ == "__main__":
     if jobs_data:
         # Save to CSV
         csv_filepath = crawler.save_raw_data("linkedin_jobs.csv", file_type="csv")
-        print(f"CSV data saved to: {csv_filepath}")
+        crawler.logger.info(f"CSV data saved to: {csv_filepath}")
         # Save to JSON
         json_filepath = crawler.save_raw_data("linkedin_jobs.json", file_type="json")
-        print(f"JSON data saved to: {json_filepath}")
+        crawler.logger.info(f"JSON data saved to: {json_filepath}")
         # Save to Excel
         excel_filepath = crawler.save_raw_data("linkedin_jobs.xlsx", file_type="excel")
-        print(f"Excel data saved to: {excel_filepath}")
+        crawler.logger.info(f"Excel data saved to: {excel_filepath}")

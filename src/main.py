@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional, Dict, List
 import warnings
 import traceback
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore")
 
 import config.config as conf  # type: ignore
@@ -182,31 +182,28 @@ def save_data_files(dataframe: pd.DataFrame, output_folder: str, basename: str) 
 
 def scrape(config: Dict) -> Optional[str]:
     """
-    Scrape job data từ ITViec và LinkedIn, sau đó lưu vào file
+    Scrape job data từ ITViec, LinkedIn, TopCV, sau đó lưu vào file
     
+    Chạy multithreads để tối ưu thời gian
     :param config: Dictionary cấu hình
     :return: Đường dẫn file CSV được lưu, hoặc None nếu thất bại
     """
     all_dataframes: List[pd.DataFrame] = []
-    
-    try:
-        # Scrape từ ITViec
-        itviec_data = scrape_itviec(config)
-        all_dataframes.extend(itviec_data)
-        
-        # Scrape từ LinkedIn
-        linkedin_data = scrape_linkedin(config)
-        all_dataframes.extend(linkedin_data)
 
-        # Scrape từ TopCV
-        topcv_data = scrape_topcv(config)
-        all_dataframes.extend(topcv_data)
-        
-        # Kiểm tra xem có dữ liệu không
-        if not all_dataframes:
-            print("\n⚠️  Không có dữ liệu từ bất kỳ nguồn nào")
-            return None
-        
+    try:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [
+                executor.submit(scrape_itviec, config),
+                executor.submit(scrape_linkedin, config),
+                executor.submit(scrape_topcv, config)
+            ]
+            for future in as_completed(futures):
+                all_dataframes.extend(future.result())
+            # Kiểm tra xem có dữ liệu không
+            if not all_dataframes:
+                print("\n⚠️  Không có dữ liệu từ bất kỳ nguồn nào")
+                return None
+            
         # Kết hợp tất cả dữ liệu
         combined_df = pd.concat(all_dataframes, ignore_index=True)
         print(f"\n📊 Tổng jobs scraped: {len(combined_df)}")

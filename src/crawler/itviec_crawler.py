@@ -7,9 +7,9 @@ import time
 import random
 import os
 from typing import List, Dict, Any
-from pathlib import Path
 import pandas as pd
 from .base_crawler import BaseCrawler
+from datetime import datetime
 
 
 class ITViecCrawler(BaseCrawler):
@@ -31,7 +31,7 @@ class ITViecCrawler(BaseCrawler):
         # Create output directory if not exists
         if not os.path.exists(output_path):
             os.makedirs(output_path)
-            print(f"Created directory: {output_path}")
+            self.logger.info(f"Created directory: {output_path}")
 
     def get_headers(self) -> Dict[str, str]:
         """Lay headers gia lap browser"""
@@ -65,7 +65,7 @@ class ITViecCrawler(BaseCrawler):
                 return 1
             return max(int(p.text.strip()) for p in pages if p.text.strip().isdigit())
         except Exception as e:
-            print(f"[WARN] Loi lay so trang: {e}")
+            self.logger.error(f"Error getting max page: {e}")
             return 1
 
     def build_list_urls(self) -> List[str]:
@@ -75,7 +75,7 @@ class ITViecCrawler(BaseCrawler):
         """
         keyword, location = self.normalize_search_params()
         max_page = self.get_max_page(keyword, location)
-        print(f"Tim thay {max_page} trang cho '{self.keyword}' tai '{self.location}'")
+        self.logger.info(f"Found {max_page} pages for '{self.keyword}' at '{self.location}'")
 
         job_links = []
         for page in range(1, max_page + 1):
@@ -83,7 +83,7 @@ class ITViecCrawler(BaseCrawler):
             try:
                 response = requests.get(list_url, headers=self.get_headers(), timeout=10)
                 if response.status_code != 200:
-                    print(f"[WARN] Khong the fetch trang {page}")
+                    self.logger.error(f"Unable to fetch page {page}")
                     continue
 
                 soup = BeautifulSoup(response.text, "html.parser")
@@ -96,18 +96,18 @@ class ITViecCrawler(BaseCrawler):
                             continue
                         job_links.append(title_elem["data-url"])
                     except Exception as e:
-                        print(f"[WARN] Loi khi scrape job link trang {page}: {e}")
+                        self.logger.error(f"Error scraping job link on page {page}: {e}")
                         continue
 
-                print(f"[{page}/{max_page}] Tim thay {len(job_items)} job tren trang")
+                self.logger.info(f"[{page}/{max_page}] Found {len(job_items)} jobs on page")
                 time.sleep(random.uniform(3, 7))
 
             except Exception as e:
-                print(f"[ERROR] Loi khi fetch trang {page}: {e}")
+                self.logger.error(f"Error fetching page {page}: {e}")
                 continue
 
         self.job_links = job_links
-        print(f"Tong cong tim thay {len(job_links)} job")
+        self.logger.info(f"Total {len(job_links)} jobs found")
         return job_links
 
     def scrape_job_detail(self, job_url: str) -> Dict[str, Any]:
@@ -147,7 +147,7 @@ class ITViecCrawler(BaseCrawler):
         try:
             job_detail = requests.get(job_url, headers=self.get_headers(), timeout=10)
             if job_detail.status_code != 200:
-                print(f"[WARN] Khong the fetch job details: {job_url}")
+                self.logger.error(f"Unable to fetch job details: {job_url}")
                 return job_post
 
             job_soup = BeautifulSoup(job_detail.text, "html.parser")
@@ -196,7 +196,7 @@ class ITViecCrawler(BaseCrawler):
             time.sleep(random.uniform(2, 5))
 
         except Exception as e:
-            print(f"[ERROR] Loi scrape job detail ({job_url}): {e}")
+            self.logger.error(f"Error scraping job detail ({job_url}): {e}")
 
         return job_post
 
@@ -247,32 +247,32 @@ class ITViecCrawler(BaseCrawler):
                 job_post["company_description"] = desc_elem.text.strip()
 
         except Exception as e:
-            print(f"[WARN] Loi scrape company details: {e}")
+            self.logger.error(f"Error scraping company details: {e}")
 
     def crawl(self) -> pd.DataFrame:
         """
         Crawl toan bo du lieu job va tra ve DataFrame
         :return: DataFrame chua du lieu job
         """
-        print(f"Dang crawl job cho '{self.keyword}' tai '{self.location}'...")
+        self.logger.info(f"Crawling jobs for '{self.keyword}' at '{self.location}'")
 
         # Build list URLs
         job_links = self.build_list_urls()
         if not job_links:
-            print("Khong tim thay job nao")
+            self.logger.info("No jobs found")
             self.data = pd.DataFrame()
             return self.data
 
         # Scrape chi tiet tung job
-        print(f"Dang scrape chi tiet {len(job_links)} job...")
+        self.logger.info(f"Scraping details for {len(job_links)} jobs...")
         jobs_data = []
         for i, job_url in enumerate(job_links, 1):
-            print(f"[{i}/{len(job_links)}] Scraping: {job_url}")
+            self.logger.info(f"[{i}/{len(job_links)}] Scraping: {job_url}")
             detail = self.scrape_job_detail(job_url)
             jobs_data.append(detail)
 
         self.data = pd.DataFrame(jobs_data)
-        print(f"Hoan thanh! Da crawl {len(self.data)} job")
+        self.logger.info(f"Finished! Crawled {len(self.data)} jobs")
         return self.data
 
     def save_raw_data(self, df: pd.DataFrame = None, filename: str = None, file_type: str = "csv") -> str:
@@ -288,7 +288,7 @@ class ITViecCrawler(BaseCrawler):
         # Validate file_type
         valid_types = ["csv", "json", "excel"]
         if file_type.lower() not in valid_types:
-            print(f"❌ Loại file không hợp lệ: {file_type}. Hỗ trợ: {', '.join(valid_types)}")
+            self.logger.error(f"Invalid file type: {file_type}. Supported types: {', '.join(valid_types)}")
             return None
 
         # Use provided df or use self.data
@@ -296,21 +296,20 @@ class ITViecCrawler(BaseCrawler):
             if isinstance(self.data, pd.DataFrame) and not self.data.empty:
                 df = self.data
             else:
-                print(f"⚠️  Không có dữ liệu để lưu")
+                self.logger.error("No data to save")
                 return None
         elif not isinstance(df, pd.DataFrame):
-            print(f"❌ Tham số df phải là pandas DataFrame")
+            self.logger.error("Parameter df must be a pandas DataFrame")
             return None
 
         if df.empty:
-            print(f"⚠️  DataFrame trống, không có dữ liệu để lưu")
+            self.logger.error("DataFrame is empty, no data to save")
             return None
 
         # Determine file extension and generate filename
         file_ext = {"csv": "csv", "json": "json", "excel": "xlsx"}[file_type.lower()]
 
         if not filename:
-            from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"itviec_jobs_{timestamp}.{file_ext}"
         elif not filename.endswith(f".{file_ext}"):
@@ -326,10 +325,10 @@ class ITViecCrawler(BaseCrawler):
             elif file_type.lower() == "excel":
                 df.to_excel(filepath, index=False, engine='openpyxl')
 
-            print(f"✅ Lưu dữ liệu thành công: {filepath} ({len(df)} rows)")
+            self.logger.info(f"Successfully saved data to {filepath} ({len(df)} rows)")
             return filepath
         except Exception as e:
-            print(f"❌ Lỗi khi lưu dữ liệu: {e}")
+            self.logger.error(f"Error saving data: {e}")
             return None
 
 
@@ -347,8 +346,8 @@ if __name__ == "__main__":
     # Save to CSV
     if not df.empty:
         filepath = crawler.save_raw_data(df, "itviec_jobs", file_type="csv")
-        print(f"Du lieu da luu tai: {filepath}")
+        crawler.logger.info(f"Data saved to: {filepath}")
         filepath = crawler.save_raw_data(df, "itviec_jobs", file_type="json")
-        print(f"Du lieu da luu tai: {filepath}")
+        crawler.logger.info(f"Data saved to: {filepath}")
         filepath = crawler.save_raw_data(df, "itviec_jobs", file_type="excel")
-        print(f"Du lieu da luu tai: {filepath}")
+        crawler.logger.info(f"Data saved to: {filepath}")

@@ -10,7 +10,7 @@ import unicodedata
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from urllib.parse import urljoin, urlparse
-
+from middleware.logging import LoggerSetup
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -18,7 +18,7 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
 from .base_crawler import BaseCrawler
-
+from utils.utils import slugify, extract_text
 
 class TopCVCrawler(BaseCrawler):
     """Crawler cho topcv.vn"""
@@ -61,8 +61,8 @@ class TopCVCrawler(BaseCrawler):
         # Create output directory if not exists
         if not os.path.exists(output_path):
             os.makedirs(output_path)
-            print(f"Created directory: {output_path}")
-
+            self.logger.info(f"Created directory: {output_path}")
+            
     def _build_session(self) -> requests.Session:
         """Tạo session với retry logic"""
         s = requests.Session()
@@ -90,28 +90,12 @@ class TopCVCrawler(BaseCrawler):
             pass
         return s
 
-    @staticmethod
-    def _text(el) -> Optional[str]:
-        """Extract và clean text từ element"""
-        if not el:
-            return None
-        t = el.get_text(" ", strip=True)
-        return re.sub(r"\s+", " ", t) if t else None
 
     @staticmethod
     def _smart_sleep(min_s: float = 1.2, max_s: float = 2.8):
         """Random sleep để tránh bị block"""
         time.sleep(random.uniform(min_s, max_s))
 
-    @staticmethod
-    def slugify(text: str) -> str:
-        """Convert text thành slug: 'Data Engineer' -> 'data-engineer'"""
-        text = unicodedata.normalize("NFD", text)
-        text = text.encode("ascii", "ignore").decode("ascii")
-        text = re.sub(r"[^a-zA-Z0-9\s-]", " ", text)
-        text = re.sub(r"\s+", "-", text.strip())
-        text = re.sub(r"-+", "-", text)
-        return text.lower()
 
     def _get_soup(self, url: str) -> BeautifulSoup:
         """Fetch URL và trả về BeautifulSoup với retry logic cho 429"""
@@ -127,7 +111,7 @@ class TopCVCrawler(BaseCrawler):
                 else:
                     wait = 6 * attempt
                 wait = wait + random.uniform(0.5, 2.0)
-                print(f"[WARN] 429 tại {url} → ngủ {wait:.1f}s (attempt {attempt})")
+                self.logger.info(f"Sleeping for {wait} seconds")
                 time.sleep(wait)
                 continue
             r.raise_for_status()
@@ -141,7 +125,7 @@ class TopCVCrawler(BaseCrawler):
         
         :return: Danh sách URLs
         """
-        slug = self.slugify(self.keyword)
+        slug = slugify(self.keyword)
         urls = []
         for page in range(self.start_page, self.end_page + 1):
             url = f"{self.BASE_URL}/tim-viec-lam-{slug}?type_keyword=1&page={page}&sba=1"
@@ -158,16 +142,16 @@ class TopCVCrawler(BaseCrawler):
             if not a_title:
                 continue
             
-            title = self._text(a_title)
+            title = extract_text(a_title)
             job_url = urljoin(self.BASE_URL, a_title.get("href"))
 
             comp_a = job.select_one("a.company[href]")
-            company = self._text(job.select_one("a.company .company-name"))
+            company = extract_text(job.select_one("a.company .company-name"))
             company_url = urljoin(self.BASE_URL, comp_a.get("href")) if comp_a else None
 
-            salary = self._text(job.select_one("label.title-salary"))
-            address = self._text(job.select_one("label.address .city-text"))
-            exp = self._text(job.select_one("label.exp span"))
+            salary = extract_text(job.select_one("label.title-salary"))
+            address = extract_text(job.select_one("label.address .city-text"))
+            exp = extract_text(job.select_one("label.exp span"))
 
             jobs.append({
                 "title": title,
@@ -183,16 +167,16 @@ class TopCVCrawler(BaseCrawler):
     def _pick_info_value(self, soup: BeautifulSoup, title: str) -> Optional[str]:
         """Lấy giá trị từ section info theo title"""
         for sec in soup.select(".job-detail__info--section"):
-            t = self._text(sec.select_one(".job-detail__info--section-content-title")) or ""
+            t = extract_text(sec.select_one(".job-detail__info--section-content-title")) or ""
             if t.lower() == title.lower():
                 v = sec.select_one(".job-detail__info--section-content-value")
-                return self._text(v) if v else self._text(sec)
+                return extract_text(v) if v else extract_text(sec)
         return None
 
     def _extract_deadline(self, soup: BeautifulSoup) -> Optional[str]:
         """Trích xuất deadline từ job detail"""
         for el in soup.select(".job-detail__info--deadline, .job-detail__information-detail--actions-label"):
-            t = self._text(el)
+            t = extract_text(el)
             if t and "Hạn nộp" in t:
                 m = re.search(r"(\d{1,2}/\d{1,2}/\d{4})", t)
                 return m.group(1) if m else t
@@ -200,27 +184,27 @@ class TopCVCrawler(BaseCrawler):
 
     def _extract_tags(self, soup: BeautifulSoup) -> List[str]:
         """Trích xuất tags/skills từ job detail"""
-        return [self._text(a) for a in soup.select(".job-tags a.item") if self._text(a)]
+        return [extract_text(a) for a in soup.select(".job-tags a.item") if extract_text(a)]
 
     def _extract_desc_blocks(self, soup: BeautifulSoup) -> Dict[str, str]:
         """Trích xuất các block mô tả công việc"""
         data = {}
         for item in soup.select(".job-description .job-description__item"):
-            h3 = self._text(item.select_one("h3")) or ""
+            h3 = extract_text(item.select_one("h3")) or ""
             content = item.select_one(".job-description__item--content")
             if content:
-                data[h3] = self._text(content)
+                data[h3] = extract_text(content)
         return data
 
     def _extract_working_addresses(self, soup: BeautifulSoup) -> List[str]:
         """Trích xuất địa điểm làm việc"""
         out = []
         for item in soup.select(".job-description__item h3"):
-            if "Địa điểm làm việc" in (self._text(item) or ""):
+            if "Địa điểm làm việc" in (extract_text(item) or ""):
                 wrap = item.find_parent(class_="job-description__item")
                 if wrap:
                     for d in wrap.select(".job-description__item--content div, .job-description__item--content li"):
-                        val = self._text(d)
+                        val = extract_text(d)
                         if val:
                             out.append(val)
         return out
@@ -229,11 +213,11 @@ class TopCVCrawler(BaseCrawler):
         """Trích xuất thời gian làm việc"""
         out = []
         for item in soup.select(".job-description__item h3"):
-            if "Thời gian làm việc" in (self._text(item) or ""):
+            if "Thời gian làm việc" in (extract_text(item) or ""):
                 wrap = item.find_parent(class_="job-description__item")
                 if wrap:
                     for d in wrap.select(".job-description__item--content div, .job-description__item--content li"):
-                        val = self._text(d)
+                        val = extract_text(d)
                         if val:
                             out.append(val)
         return out
@@ -253,7 +237,7 @@ class TopCVCrawler(BaseCrawler):
         soup = self._get_soup(job_url)
         self._smart_sleep()
 
-        title = self._text(soup.select_one(".job-detail__info--title, h1"))
+        title = extract_text(soup.select_one(".job-detail__info--title, h1"))
         salary = self._pick_info_value(soup, "Mức lương")
         location = self._pick_info_value(soup, "Địa điểm")
         experience = self._pick_info_value(soup, "Kinh nghiệm")
@@ -308,7 +292,7 @@ class TopCVCrawler(BaseCrawler):
                         "meta[property='og:title']", "meta[property='og:site_name']", "title"]:
                 el = soup.select_one(css)
                 if el:
-                    company_name = el.get("content") if el.name == "meta" else self._text(el)
+                    company_name = el.get("content") if el.name == "meta" else extract_text(el)
                     if company_name:
                         company_name = re.sub(r"\s*\|\s*TopCV.*$", "", company_name, flags=re.I)
                         break
@@ -333,12 +317,12 @@ class TopCVCrawler(BaseCrawler):
             # Parse các thông tin từ rows
             rows = container.select("li, .row, .item, .info-item, .company-info-item, .dl, .d-flex")
             for row in rows:
-                row_text = self._text(row) or ""
+                row_text = extract_text(row) or ""
                 label = None
                 value = None
                 strong = row.find(["strong", "b"])
                 if strong:
-                    label = self._text(strong)
+                    label = extract_text(strong)
                     value = row_text
                     if label:
                         value = re.sub(re.escape(label), "", value, flags=re.I).strip(" :-–—")
@@ -369,7 +353,7 @@ class TopCVCrawler(BaseCrawler):
             ]:
                 el = soup.select_one(css)
                 if el:
-                    description = self._text(el)
+                    description = extract_text(el)
                     if description:
                         break
 
@@ -383,7 +367,7 @@ class TopCVCrawler(BaseCrawler):
             }
             
         except Exception as e:
-            print(f"[WARN] Lỗi scrape company details: {e}")
+            self.logger.error(f"Error scraping company details: {e}")
             return empty_result
 
     def crawl(self) -> pd.DataFrame:
@@ -392,17 +376,16 @@ class TopCVCrawler(BaseCrawler):
         
         :return: DataFrame chứa dữ liệu job
         """
-        print(f"Đang crawl job cho '{self.keyword}' từ trang {self.start_page} đến {self.end_page}...")
-        
+        self.logger.info(f"Crawling jobs for '{self.keyword}' from page {self.start_page} to {self.end_page}")
         rows: List[Dict] = []
         search_urls = self.build_list_urls()
 
         for page, url in enumerate(search_urls, start=self.start_page):
-            print(f"[INFO] Crawling search page {page}: {url}")
+            self.logger.info(f"Crawling search page {page}: {url}")
             jobs = self._parse_search_page(url)
 
             if not jobs:
-                print(f"[INFO] Trang {page} không còn job — dừng sớm.")
+                self.logger.info(f"Page {page} has no jobs — stopping early.")
                 break
 
             for j in jobs:
@@ -416,7 +399,7 @@ class TopCVCrawler(BaseCrawler):
                 try:
                     detail = self.scrape_job_detail(job_url)
                 except Exception as e:
-                    print(f"[WARN] Lỗi job detail {job_url}: {e}")
+                    self.logger.error(f"Error scraping job detail {job_url}: {e}")
                     detail = {k: None for k in [
                         "detail_title", "detail_salary", "detail_location",
                         "detail_experience", "deadline", "tags", "desc_mota",
@@ -429,7 +412,7 @@ class TopCVCrawler(BaseCrawler):
                 try:
                     comp = self._scrape_company_details(company_url)
                 except Exception as e:
-                    print(f"[WARN] Lỗi company {company_url}: {e}")
+                    self.logger.error(f"Error scraping company details {company_url}: {e}")
                     comp = {k: None for k in [
                         "company_name_full", "company_website", "company_size",
                         "company_industry", "company_address", "company_description"
@@ -439,7 +422,7 @@ class TopCVCrawler(BaseCrawler):
                 row = {
                     "crawl_date": self.crawl_date,
                     "search_keyword": self.keyword,
-                    "search_slug": self.slugify(self.keyword),
+                    "search_slug": slugify(self.keyword),
                     **j,
                     **detail,
                     **comp
@@ -469,7 +452,7 @@ class TopCVCrawler(BaseCrawler):
         cols = [c for c in cols if c in self.data.columns]
         self.data = self.data.loc[:, cols] if cols else self.data
         
-        print(f"Hoàn thành! Đã crawl {len(self.data)} job")
+        self.logger.info(f"Finished! Crawled {len(self.data)} jobs")
         return self.data
 
     def save_raw_data(self, df: pd.DataFrame = None, filename: str = None, file_type: str = "csv") -> str:
@@ -483,7 +466,7 @@ class TopCVCrawler(BaseCrawler):
         """
         valid_types = ["csv", "json", "excel"]
         if file_type.lower() not in valid_types:
-            print(f"❌ Loại file không hợp lệ: {file_type}. Hỗ trợ: {', '.join(valid_types)}")
+            self.logger.error(f"Invalid file type: {file_type}. Supported types: {', '.join(valid_types)}")
             return None
 
         # Use provided df or use self.data
@@ -491,11 +474,11 @@ class TopCVCrawler(BaseCrawler):
             if isinstance(self.data, pd.DataFrame) and not self.data.empty:
                 df = self.data
             else:
-                print(f"⚠️  Không có dữ liệu để lưu")
+                self.logger.error("No data to save")
                 return None
 
         if df.empty:
-            print(f"⚠️  DataFrame trống, không có dữ liệu để lưu")
+            self.logger.error("DataFrame is empty, no data to save")
             return None
 
         # Determine file extension and generate filename
@@ -517,26 +500,26 @@ class TopCVCrawler(BaseCrawler):
             elif file_type.lower() == "excel":
                 df.to_excel(filepath, index=False, engine='openpyxl')
 
-            print(f"✅ Lưu dữ liệu thành công: {filepath} ({len(df)} rows)")
+            self.logger.info(f"Successfully saved data to {filepath} ({len(df)} rows)")
             return filepath
         except Exception as e:
-            print(f"❌ Lỗi khi lưu dữ liệu: {e}")
+            self.logger.error(f"Error saving data: {e}")
             return None
 
 
-if __name__ == "__main__":
-    crawler = TopCVCrawler(
-        output_path="data/raw",
-        keyword="Data Engineer",
-        start_page=1,
-        end_page=2
-    )
+# if __name__ == "__main__":
+#     crawler = TopCVCrawler(
+#         output_path="data/raw",
+#         keyword="Data Engineer",
+#         start_page=1,
+#         end_page=2
+#     )
 
-    # Crawl data
-    df = crawler.crawl()
+#     # Crawl data
+#     df = crawler.crawl()
 
-    # Save to files
-    if not df.empty:
-        crawler.save_raw_data(filename="topcv_jobs", file_type="csv")
-        crawler.save_raw_data(filename="topcv_jobs", file_type="json")
-        crawler.save_raw_data(filename="topcv_jobs", file_type="excel")
+#     # Save to files
+#     if not df.empty:
+#         crawler.save_raw_data(filename="topcv_jobs", file_type="csv")
+#         crawler.save_raw_data(filename="topcv_jobs", file_type="json")
+#         crawler.save_raw_data(filename="topcv_jobs", file_type="excel")
