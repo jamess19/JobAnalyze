@@ -18,6 +18,10 @@ REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8000/callback")
 
 PORT = os.getenv("PORT", 8000)
 
+# LinkedIn credentials (for authenticated scraping)
+LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL", "")
+LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD", "")
+
 
 DEFAULT_CONFIG = {
     "output_folder": OUTPUT_FOLDER,
@@ -34,5 +38,5 @@ DEFAULT_CONFIG = {
     # Cấu hình TopCV
     "topcv_keywords": ["Data Engineer", "Data Analyst", "Software Engineer"],
     "topcv_start_page": 1,
-    "topcv_end_page": 3,
+    "topcv_end_page": 1,
 }

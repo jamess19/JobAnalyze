@@ -2,6 +2,12 @@ import unicodedata
 import re
 from typing import Optional
 
+def join_text(text_list):
+            if not text_list: return None
+            lines = [t.strip() for t in text_list if t.strip()]
+            return '\n'.join(lines) if lines else None
+        
+
 def slugify(text: str) -> str:
     """Convert text thành slug: 'Data Engineer' -> 'data-engineer'"""
     text = unicodedata.normalize("NFD", text)

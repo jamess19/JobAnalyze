@@ -1,147 +1,199 @@
 #!/usr/bin/env python3
 """
-Main Pipeline - Scrape job data từ ITViec và LinkedIn, và upload lên Google Drive
+Main Pipeline - Scrapy Spiders Runner with Google Drive Upload
+Uses Scrapy spiders to scrape job data, combine results, and upload to Google Drive
 """
 import os
 import sys
+
+# Add src to path BEFORE any local imports
+sys.path.insert(0, os.path.dirname(__file__))
+
+# Set the working directory to src for scrapy.cfg discovery
+os.chdir(os.path.dirname(__file__))
+
+# Set Scrapy settings module
+os.environ.setdefault('SCRAPY_SETTINGS_MODULE', 'settings')
+
 import pandas as pd
 from datetime import datetime
 from typing import Optional, Dict, List
 import warnings
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore")
+
+# Scrapy imports
+from scrapy.crawler import CrawlerProcess
+from scrapy.utils.project import get_project_settings
 
 import config.config as conf  # type: ignore
 
-# Thêm src vào path
-sys.path.insert(0, os.path.dirname(__file__))
-
-from crawler.itviec_crawler import ITViecCrawler  # type: ignore
-from crawler.linkedin_crawler import LinkedInCrawler  # type: ignore
-from crawler.topcv_crawler import TopCVCrawler  # type: ignore
+# Spider imports
+from spiders.spiders.itviec_spider import ItviecSpider  # type: ignore
+from spiders.spiders.topcv_spider import TopcvSpider  # type: ignore
+from spiders.spiders.linkedin_spider import LinkedinSpider  # type: ignore
 from storage.drive_uploader import GoogleDriveUploader  # type: ignore
 
 
-def scrape_itviec(config: Dict) -> List[pd.DataFrame]:
+def run_spiders(spider_configs: List[Dict], output_folder: str) -> List[Dict]:
     """
-    Scrape job data từ ITViec cho tất cả keywords
+    Run multiple Scrapy spiders and collect all items in memory
     
-    :param config: Dictionary cấu hình chứa itviec_keywords và itviec_location
-    :return: List các DataFrame chứa dữ liệu job từ ITViec
+    :param spider_configs: List of spider configurations
+    :param output_folder: Output directory for scraped data
+    :return: List of all collected items from all spiders
     """
-    dataframes: List[pd.DataFrame] = []
-
-    print("🔍 Scraping ITViec...")
-    keywords = config.get("itviec_keywords", [])
-    location = config.get("itviec_location", "ho-chi-minh")
-    output_path = config.get("output_folder", "src/data")
+    print("🕷️  Starting Scrapy spiders...\n")
     
-    for keyword in keywords:
-        print(f"   Keyword: '{keyword}'")
-        try:
-            crawler = ITViecCrawler(
-                output_path=output_path,
-                keyword=keyword,
-                location=location
-            )
-
-            df = crawler.crawl()
-            
-            if df is not None and not df.empty:
-                df['source'] = 'ITViec'
-                dataframes.append(df)
-                print(f"   ✅ Crawled {len(df)} jobs")
-            else:
-                print(f"   ⚠️  Không tìm thấy job cho keyword '{keyword}'")
-                
-        except Exception as e:
-            print(f"   ❌ Lỗi khi scrape ITViec với keyword '{keyword}': {e}")
+    # Shared list to collect all items from all spiders
+    collected_items = []
+    
+    # Get Scrapy settings
+    settings = get_project_settings()
+    
+    # Override settings - DISABLE ExportPipeline
+    settings.set('LOG_LEVEL', 'INFO')
+    settings.set('OUTPUT_DIR', output_folder)
+    
+    # Disable ExportPipeline - we'll export manually after combining
+    settings.set('ITEM_PIPELINES', {
+        "spiders.pipelines.ValidationPipeline": 100,
+        "spiders.pipelines.CleaningPipeline": 200,
+        "spiders.pipelines.DeduplicationPipeline": 300,
+        # ExportPipeline is DISABLED - no automatic export
+    })
+    
+    # Create output directory
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Custom item collector
+    def item_scraped_handler(item, response, spider):
+        """Handler to collect items as they're scraped"""
+        collected_items.append(dict(item))
+    
+    # Create crawler process
+    process = CrawlerProcess(settings)
+    
+    # Spider mapping
+    spider_classes = {
+        'itviec': ItviecSpider,
+        'topcv': TopcvSpider,
+        'linkedin': LinkedinSpider,
+    }
+    
+    spider_count = 0
+    
+    # Schedule all spiders
+    for config in spider_configs:
+        spider_name = config.get('spider')
+        keywords = config.get('keywords', [])
+        location = config.get('location', 'Ho Chi Minh')
+        start_page = config.get('start_page', 1)
+        end_page = config.get('end_page', 3)
+        
+        if spider_name not in spider_classes:
+            print(f"⚠️  Unknown spider: {spider_name}")
             continue
-    
-    return dataframes
-
-
-def scrape_linkedin(config: Dict) -> List[pd.DataFrame]:
-    """
-    Scrape job data từ LinkedIn cho tất cả keywords
-    
-    :param config: Dictionary cấu hình chứa linkedin_keywords và các tham số khác
-    :return: List các DataFrame chứa dữ liệu job từ LinkedIn
-    """
-    dataframes: List[pd.DataFrame] = []
-    
-    print("\n🔍 Scraping LinkedIn...")
-    keywords = config.get("linkedin_keywords", [])
-    location = config.get("linkedin_location", "Vietnam")
-    results_wanted = config.get("linkedin_results_wanted", 50)
-    hours_old = config.get("linkedin_hours_old", 72)
-    output_path = config.get("output_folder", "src/data")
-    
-    for keyword in keywords:
-        print(f"   Keyword: '{keyword}'")
-        try:
-            crawler = LinkedInCrawler(
-                output_path=output_path,
-                search_term=keyword,
+        
+        spider_class = spider_classes[spider_name]
+        
+        # Schedule spider for each keyword
+        for keyword in keywords:
+            print(f"🔍 Scheduling {spider_name.upper()} spider")
+            print(f"   Keyword: '{keyword}'")
+            print(f"   Location: {location}")
+            print(f"   Pages: {start_page} to {end_page}")
+            
+            crawler = process.create_crawler(spider_class)
+            # Connect signal to collect items
+            from scrapy import signals
+            crawler.signals.connect(item_scraped_handler, signal=signals.item_scraped)
+            
+            process.crawl(
+                crawler,
+                keyword=keyword,
                 location=location,
-                results_wanted=results_wanted,
-                hours_old=hours_old,
-                fetch_description=True
-            )
-            df = crawler.crawl()
-            
-            if df is not None and not df.empty:
-                df['source'] = 'LinkedIn'
-                dataframes.append(df)
-                print(f"   ✅ Crawled {len(df)} jobs")
-            else:
-                print(f"   ⚠️  Không tìm thấy job cho keyword '{keyword}'")
-                
-        except Exception as e:
-            print(f"   ❌ Lỗi khi scrape LinkedIn với keyword '{keyword}': {e}")
-            continue
-    
-    return dataframes
-
-def scrape_topcv(config: Dict) -> List[pd.DataFrame]:
-    """
-    Scrape job data từ TopCV cho tất cả keywords
-    
-    :param config: Dictionary cấu hình chứa topcv_keywords và các tham số khác
-    :return: List các DataFrame chứa dữ liệu job từ TopCV
-    """
-    dataframes: List[pd.DataFrame] = []
-    
-    print("\n🔍 Scraping TopCV...")
-    keywords = config.get("topcv_keywords", [])
-    start_page = config.get("topcv_start_page", 1)
-    end_page = config.get("topcv_end_page", 3)
-    output_path = config.get("output_folder", "src/data")
-    
-    for keyword in keywords:
-        print(f"   Keyword: '{keyword}'")
-        try:
-            crawler = TopCVCrawler(
-                output_path=output_path,
-                keyword=keyword,
                 start_page=start_page,
                 end_page=end_page
             )
-            df = crawler.crawl()
-            
-            if df is not None and not df.empty:
-                df['source'] = 'TopCV'
-                dataframes.append(df)
-                print(f"   ✅ Crawled {len(df)} jobs")
-            else:
-                print(f"   ⚠️  Không tìm thấy job cho keyword '{keyword}'")
-                
-        except Exception as e:
-            print(f"   ❌ Lỗi khi scrape TopCV với keyword '{keyword}': {e}")
-            continue
+            spider_count += 1
     
-    return dataframes
+    if spider_count == 0:
+        print("❌ No spiders scheduled")
+        return []
+    
+    # Start crawling process
+    print(f"\n⏳ Running {spider_count} spider(s)...\n")
+    print("=" * 70)
+    
+    start_time = datetime.now()
+    
+    try:
+        process.start()  # Blocks until all spiders finish
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        
+        print("\n" + "=" * 70)
+        print(f"✅ All spiders completed!")
+        print(f"⏱️  Duration: {duration:.2f} seconds ({duration/60:.2f} minutes)")
+        print(f"📊 Total items collected: {len(collected_items)}")
+        print("=" * 70 + "\n")
+        
+        return collected_items
+        
+    except Exception as e:
+        print(f"\n❌ Error during spider execution: {e}")
+        traceback.print_exc()
+        return []
+
+
+def combine_and_export_data(collected_items: List[Dict], output_folder: str) -> Optional[str]:
+    """
+    Combine all collected items and export to CSV, Excel, JSON
+    
+    :param collected_items: List of all items collected from spiders
+    :param output_folder: Directory to save output files
+    :return: Path to combined CSV file, or None if failed
+    """
+    print("📊 Processing and combining data...")
+    
+    try:
+        if not collected_items:
+            print("⚠️  No items collected from spiders")
+            return None
+        
+        # Convert items to DataFrame to deduplication
+        print(f"   Processing {len(collected_items)} items...")
+        combined_df = pd.DataFrame(collected_items)
+        
+        # Remove duplicates based on job_url
+        original_count = len(combined_df)
+        combined_df = combined_df.drop_duplicates(subset=['job_url'], keep='first')
+        dedup_count = original_count - len(combined_df)
+        
+        print(f"\n📊 Total items collected: {original_count}")
+        if dedup_count > 0:
+            print(f"⚠️ Removed {dedup_count} duplicate(s)")
+        print(f" ✅ Final unique jobs: {len(combined_df)}")
+        
+        # Create combined filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        basename = f"combined_jobs_{timestamp}"
+        
+        # Save combined files (CSV, Excel, JSON)
+        saved_files = save_data_files(combined_df, output_folder, basename)
+        
+        if 'csv' not in saved_files:
+            print("\n❌ Error: Cannot save combined CSV file")
+            return None
+        
+        print("\n✅ Data export completed")
+        return saved_files['csv']
+        
+    except Exception as e:
+        print(f"\n❌ Error processing data: {e}")
+        traceback.print_exc()
+        return None
 
 def save_data_files(dataframe: pd.DataFrame, output_folder: str, basename: str) -> Dict[str, str]:
     """
@@ -154,24 +206,26 @@ def save_data_files(dataframe: pd.DataFrame, output_folder: str, basename: str) 
     """
     saved_files = {}
     
+    print(f"\n💾 Saving combined data...")
+    
     try:
         # Lưu CSV
         csv_path = os.path.join(output_folder, f"{basename}.csv")
         dataframe.to_csv(csv_path, index=False, encoding='utf-8')
         saved_files['csv'] = csv_path
-        print(f"   ✅ Saved CSV: {csv_path}")
+        print(f"   ✅ CSV: {csv_path}")
         
         # Lưu Excel
         excel_path = os.path.join(output_folder, f"{basename}.xlsx")
         dataframe.to_excel(excel_path, index=False)
         saved_files['excel'] = excel_path
-        print(f"   ✅ Saved Excel: {excel_path}")
+        print(f"   ✅ Excel: {excel_path}")
         
         # Lưu JSON
         json_path = os.path.join(output_folder, f"{basename}.json")
         dataframe.to_json(json_path, orient='records', indent=2, force_ascii=False)
         saved_files['json'] = json_path
-        print(f"   ✅ Saved JSON: {json_path}")
+        print(f"   ✅ JSON: {json_path}")
         
     except Exception as e:
         print(f"   ❌ Lỗi khi lưu file: {e}")
@@ -180,56 +234,46 @@ def save_data_files(dataframe: pd.DataFrame, output_folder: str, basename: str) 
     return saved_files
 
 
-def scrape(config: Dict) -> Optional[str]:
+def build_spider_configs(config: Dict) -> List[Dict]:
     """
-    Scrape job data từ ITViec, LinkedIn, TopCV, sau đó lưu vào file
+    Build spider configurations from DEFAULT_CONFIG
     
-    Chạy multithreads để tối ưu thời gian
-    :param config: Dictionary cấu hình
-    :return: Đường dẫn file CSV được lưu, hoặc None nếu thất bại
+    :param config: Configuration dictionary
+    :return: List of spider configurations
     """
-    all_dataframes: List[pd.DataFrame] = []
+    spider_configs = []
+    
+    # ITViec configuration
+    if config.get('itviec_keywords'):
+        spider_configs.append({
+            'spider': 'itviec',
+            'keywords': config.get('itviec_keywords', []),
+            'location': config.get('itviec_location', 'ho-chi-minh'),
+            'start_page': 1,
+            'end_page': 1,
+        })
+    
+    # TopCV configuration
+    if config.get('topcv_keywords'):
+        spider_configs.append({
+            'spider': 'topcv',
+            'keywords': config.get('topcv_keywords', []),
+            'location': 'Ho Chi Minh',
+            'start_page': config.get('topcv_start_page', 1),
+            'end_page': config.get('topcv_end_page', 1),
+        })
 
-    try:
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [
-                executor.submit(scrape_itviec, config),
-                executor.submit(scrape_linkedin, config),
-                executor.submit(scrape_topcv, config)
-            ]
-            for future in as_completed(futures):
-                all_dataframes.extend(future.result())
-            # Kiểm tra xem có dữ liệu không
-            if not all_dataframes:
-                print("\n⚠️  Không có dữ liệu từ bất kỳ nguồn nào")
-                return None
-            
-        # Kết hợp tất cả dữ liệu
-        combined_df = pd.concat(all_dataframes, ignore_index=True)
-        print(f"\n📊 Tổng jobs scraped: {len(combined_df)}")
-        
-        # Tạo tên file với timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        basename = f"jobs_{timestamp}"
-        output_folder = config.get("output_folder", "src/data")
-        
-        # Đảm bảo thư mục output tồn tại
-        os.makedirs(output_folder, exist_ok=True)
-        
-        # Lưu file
-        saved_files = save_data_files(combined_df, output_folder, basename)
-        
-        if 'csv' not in saved_files:
-            print("\n❌ Lỗi: Không thể lưu file CSV")
-            return None
-        
-        print("\n✅ Scraping hoàn tất")
-        return saved_files['csv']
-        
-    except Exception as e:
-        print(f"\n❌ Lỗi scraping: {e}")
-        traceback.print_exc()
-        return None
+    # LinkedIn configuration
+    if config.get('linkedin_keywords'):
+        spider_configs.append({
+            'spider': 'linkedin',
+            'keywords': config.get('linkedin_keywords', []),
+            'location': config.get('linkedin_location', 'Vietnam'),
+            'start_page': 1,
+            'end_page': 2,
+        })
+    
+    return spider_configs
 
 
 def upload_to_drive(file_path: str) -> bool:
@@ -244,7 +288,9 @@ def upload_to_drive(file_path: str) -> bool:
         return False
     
     try:
-        print(f"\n📤 Uploading file: {file_path} to Google Drive...")
+        print(f"\n📤 Uploading to Google Drive...")
+        print(f"   File: {os.path.basename(file_path)}")
+        
         uploader = GoogleDriveUploader()
         uploader.upload(file_path)
         print("✅ Upload thành công")
@@ -258,40 +304,88 @@ def upload_to_drive(file_path: str) -> bool:
 
 def main() -> int:
     """
-    Main function - chạy pipeline scrape và upload
+    Main function - chạy Scrapy spiders pipeline và upload lên Google Drive
+    
+    Pipeline workflow:
+    1. Cào dữ liệu từ ITViec và TopCV bằng Scrapy spiders (trong memory)
+    2. Gộp tất cả dữ liệu lại
+    3. Xuất thành CSV, Excel, JSON (1 lần duy nhất)
+    4. Upload file CSV lên Google Drive
     
     :return: Exit code (0 = thành công, 1 = thất bại)
     """
     try:
+        # Load config
         config = conf.DEFAULT_CONFIG
+        output_folder = config.get("output_folder", "src/data")
         
-        # Scrape dữ liệu
-        csv_file = scrape(config)
+        print("\n" + "=" * 70)
+        print("🚀 DATA COLLECTION PIPELINE - SCRAPY SPIDERS")
+        print("=" * 70)
+        print(f"📁 Output folder: {output_folder}\n")
         
-        if csv_file is None:
-            print("\n❌ Scraping thất bại - Dừng pipeline")
+        # Build spider configurations from config
+        spider_configs = build_spider_configs(config)
+        
+        if not spider_configs:
+            print("❌ No spider configurations found in config")
             return 1
         
-        # Upload lên Drive
-        upload_success = upload_to_drive(csv_file)
+        print(f"📋 Found {len(spider_configs)} spider configuration(s)")
+        for cfg in spider_configs:
+            print(f"   - {cfg['spider'].upper()}: {len(cfg['keywords'])} keyword(s)")
+        print()
+        
+        # Step 1: Run spiders to scrape data (collect in memory)
+        print("=" * 70)
+        print("STEP 1: SCRAPING DATA")
+        print("=" * 70 + "\n")
+        
+        collected_items = run_spiders(spider_configs, output_folder)
+        
+        if not collected_items:
+            print("\n❌ No items collected from spiders")
+            return 1
+        
+        # Step 2: Combine and export data
+        print("=" * 70)
+        print("STEP 2: COMBINING & EXPORTING DATA")
+        print("=" * 70 + "\n")
+        
+        combined_csv = combine_and_export_data(collected_items, output_folder)
+        
+        if combined_csv is None:
+            print("\n❌ Failed to export data")
+            return 1
+        
+        # Step 3: Upload to Google Drive
+        print("=" * 70)
+        print("STEP 3: UPLOADING TO GOOGLE DRIVE")
+        print("=" * 70)
+        
+        upload_success = upload_to_drive(combined_csv)
         
         if not upload_success:
-            print("\n⚠️  Upload thất bại nhưng dữ liệu đã được lưu cục bộ")
-            print(f"   File location: {csv_file}")
+            print("\n⚠️  Upload failed but data saved locally")
+            print(f"   📁 File location: {combined_csv}")
             return 1
         
-        # Thành công
+        # Success
         print("\n" + "=" * 70)
-        print("✅ PIPELINE HOÀN TẤT THÀNH CÔNG")
+        print("✅ PIPELINE COMPLETED SUCCESSFULLY")
         print("=" * 70)
+        print(f"\n📁 Output files saved in: {output_folder}")
+        print(f"📄 Combined file: {os.path.basename(combined_csv)}")
+        print(f"☁️  Uploaded to Google Drive\n")
+        
         return 0
         
     except KeyboardInterrupt:
-        print("\n\n⚠️  Pipeline bị dừng bởi người dùng")
-        return 130  # Exit code cho SIGINT
+        print("\n\n⚠️  Pipeline interrupted by user (Ctrl+C)")
+        return 130
         
     except Exception as e:
-        print(f"\n❌ Lỗi không mong đợi trong main: {e}")
+        print(f"\n❌ Unexpected error: {e}")
         traceback.print_exc()
         return 1
 
