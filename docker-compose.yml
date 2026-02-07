@@ -1,0 +1,13 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: job_market_db
+    environment:
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=job_market
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./data/pg_data:/var/lib/postgresql/data
+    restart: always

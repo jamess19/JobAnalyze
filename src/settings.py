@@ -7,6 +7,18 @@
 #     https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
 #     https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
+import os
+from datetime import datetime
+from dotenv import load_dotenv
+
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+env_path = os.path.join(base_dir, '.env')
+print(f"[DEBUG] Loading .env from: {env_path}")
+print(f"[DEBUG] File exists: {os.path.exists(env_path)}")
+
+load_dotenv(env_path, override=True, verbose=True)  # verbose=True để debug
+
+
 BOT_NAME = "spiders_job"
 
 SPIDER_MODULES = ["spiders.spiders"]
@@ -14,6 +26,15 @@ NEWSPIDER_MODULE = "spiders.spiders"
 
 ADDONS = {}
 
+# ============================================================
+# DATABASE CONFIGURATION
+# ============================================================
+# PostgreSQL/TimescaleDB connection string
+# Format: postgresql://user:password@host:port/database
+DATABASE_URL = os.getenv(
+    'DATABASE_URL',
+    'localhost://postgres:password@localhost:5433/job_market'
+)
 
 # Crawl responsibly by identifying yourself (and your website) on the user-agent
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
