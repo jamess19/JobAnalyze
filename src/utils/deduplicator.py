@@ -30,7 +30,8 @@ class MinHashDeduplicator:
         self.num_perm = num_perm
         self.num_bands = num_bands
         self.rows_per_band = num_perm // num_bands
-        
+        self.index: dict[tuple[int, str], list[MinHash]] = {}
+
         # Validate configuration
         if num_perm % num_bands != 0:
             raise ValueError(f"num_perm ({num_perm}) must be divisible by num_bands ({num_bands})")
@@ -143,17 +144,31 @@ class MinHashDeduplicator:
         """
         return mh1.jaccard(mh2)
     
-    def is_duplicate(self, text1: str, text2: str, threshold: float = 0.75) -> bool:
+    def add(self, text: str):
+        """Add text to the LSH index for future comparison."""
+        sig = self.compute_signature(text)
+        buckets = self.get_buckets(sig)
+        for band_idx, bucket_hash in buckets:
+            self.index.setdefault((band_idx, bucket_hash), []).append(sig)
+
+    def is_duplicate(self, text: str, text2: str | None = None, threshold: float = 0.75) -> bool:
         """
-        Check if two texts are near-duplicates
-        
-        :param text1: First text
-        :param text2: Second text
-        :param threshold: Similarity threshold (default: 0.75)
-        :return: True if similarity >= threshold
+        Check if text is a near-duplicate.
+
+        If text2 is provided, compare two texts directly.
+        If text2 is None, check against the LSH index.
         """
-        mh1 = self.compute_signature(text1)
-        mh2 = self.compute_signature(text2)
-        
-        similarity = self.compute_similarity(mh1, mh2)
-        return similarity >= threshold
+        mh1 = self.compute_signature(text)
+
+        if text2 is not None:
+            mh2 = self.compute_signature(text2)
+            return self.compute_similarity(mh1, mh2) >= threshold
+
+        # Check against LSH index
+        buckets = self.get_buckets(mh1)
+        for band_idx, bucket_hash in buckets:
+            candidates = self.index.get((band_idx, bucket_hash), [])
+            for candidate_mh in candidates:
+                if self.compute_similarity(mh1, candidate_mh) >= threshold:
+                    return True
+        return False

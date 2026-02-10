@@ -1,0 +1,1 @@
+from repositories.job_repository import JobRepository

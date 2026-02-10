@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+cd "$PROJECT_DIR"
+
+docker compose up scraper --abort-on-container-exit
+
+echo "[$(date)] Pipeline completed" >> logs/cron.log

@@ -1,0 +1,23 @@
+[project]
+name = "job-data-collection"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "scrapy>=2.11",
+    "scrapy-playwright>=0.0.40",
+    "pandas>=2.0",
+    "psycopg2-binary>=2.9",
+    "sqlalchemy>=2.0",
+    "datasketch>=1.6",
+    "openpyxl>=3.1",
+    "beautifulsoup4>=4.12",
+    "google-api-python-client>=2.0",
+    "google-auth-oauthlib>=1.0",
+    "python-dotenv>=1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+scrape = "main:main"

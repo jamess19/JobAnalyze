@@ -89,10 +89,11 @@ DOWNLOADER_MIDDLEWARES = {
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
 # Pipeline order: validation -> normalization -> deduplication -> export
 ITEM_PIPELINES = {
-   "spiders.pipelines.ValidationPipeline": 100,
-   "spiders.pipelines.CleaningPipeline": 200,  # Text cleaning only (no normalization)
-   "spiders.pipelines.DeduplicationPipeline": 300,
-   "spiders.pipelines.ExportPipeline": 400,
+   "pipelines.validation.ValidationPipeline": 100,
+   "pipelines.cleaning.CleaningPipeline": 200,
+   "pipelines.deduplication.DeduplicationPipeline": 300,
+   "pipelines.database.DatabasePipeline": 400,
+   "pipelines.export.ExportPipeline": 500,
 }
 
 # Enable and configure the AutoThrottle extension (disabled by default)

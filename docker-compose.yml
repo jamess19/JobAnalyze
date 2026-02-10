@@ -3,11 +3,32 @@ services:
     image: timescale/timescaledb:latest-pg14
     container_name: job_market_db
     environment:
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_USER=postgres
-      - POSTGRES_DB=job_market
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-job_market}
     ports:
       - "5433:5432"
     volumes:
-      - ./data/pg_data:/var/lib/postgresql/data
-    restart: always
+      - pgdata:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  scraper:
+    build: .
+    container_name: job_scraper
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-password}@timescaledb:5432/job_market
+    volumes:
+      - ./src/data:/app/src/data
+    command: python -m main
+
+volumes:
+  pgdata:

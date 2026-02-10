@@ -10,11 +10,8 @@ from datetime import datetime
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 
-# Add parent directory to path to import spiders
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.spiders.itviec_spider import ItviecSpider
-from src.spiders.topcv_spider import TopcvSpider
+from spiders.spiders.itviec_spider import ItviecSpider
+from spiders.spiders.topcv_spider import TopcvSpider
 
 
 def run_spider(spider_name, keyword, location, start_page, end_page):

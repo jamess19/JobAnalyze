@@ -1,0 +1,14 @@
+# Data and logs folders (anywhere in project)
+**/data/
+**/logs/
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# System files
+.DS_Store
+
+# Virtual environment
+.venv/
