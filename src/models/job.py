@@ -1,6 +1,6 @@
 import uuid
 from sqlalchemy import Column, Text, DateTime, Numeric, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, ARRAY, INTEGER
 from sqlalchemy.orm import relationship
 from models.base import Base
 
@@ -18,11 +18,12 @@ class Job(Base):
     salary_max = Column(Numeric(15, 2))
     salary_currency = Column(Text, default="VND")
     experience = Column(Text)
-    location_id = Column(UUID(as_uuid=True), ForeignKey("locations.id"))
+    location_id = Column(UUID(as_uuid=True), ForeignKey("locations.id"), nullable=True)
     processed_at = Column(DateTime, server_default="now()")
     last_seen = Column(DateTime, server_default="now()")
+    
+    # Deduplication: MinHash signature for Jaccard similarity
+    minhash_signature = Column(ARRAY(INTEGER), nullable=True)
 
     # Relationships
-    location = relationship("Location", back_populates="jobs")
-    skills = relationship("Skill", secondary="job_skills", back_populates="jobs")
-    domains = relationship("Domain", secondary="job_domain", back_populates="jobs")
+    location = relationship("Location", back_populates="jobs", foreign_keys=[location_id])

@@ -1,8 +1,9 @@
 import logging
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from models import Job, Location, Skill, Domain
-from models.associations import job_skills
+from models.associations import job_skills, job_domain
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +19,23 @@ class JobRepository:
             for item in items:
                 try:
                     location = self._upsert_location(session, item)
-                    job = self._upsert_job(session, item, location)
+                    
+                    # Extract MinHash signature if present
+                    signature = item.get('minhash_signature')
+                    
+                    job = self._upsert_job(session, item, location, signature)
                     self._upsert_skills(session, item, job)
+                    
+                    # NEW: Upsert domains if present
+                    domains_list = self._extract_domains_from_item(item)
+                    if domains_list:
+                        self._upsert_domains(session, job.id, job.posted_date, domains_list)
+                    
+                    # NEW: Save LSH buckets if present
+                    lsh_buckets = item.get('lsh_buckets')
+                    if lsh_buckets:
+                        self.save_lsh_buckets(session, job.id, job.posted_date, lsh_buckets)
+                    
                     saved += 1
                 except Exception as e:
                     session.rollback()
@@ -40,20 +56,36 @@ class JobRepository:
 
         return session.query(Location).filter_by(city_name=city).first()
 
-    def _upsert_job(self, session: Session, item: dict, location: Location | None) -> Job:
-        stmt = insert(Job).values(
-            id=item.get("job_id"),
-            posted_date=item.get("date_posted") or item.get("crawl_date"),
-            source=item.get("source"),
-            title=item.get("title"),
-            company_name=item.get("company_name"),
-            url=item.get("job_url"),
-            salary_min=item.get("salary_min"),
-            salary_max=item.get("salary_max"),
-            salary_currency=item.get("salary_currency", "VND"),
-            experience=item.get("experience_required"),
-            location_id=location.id if location else None,
-        ).on_conflict_do_update(
+    def _upsert_job(self, session: Session, item: dict, location: Location | None, signature: list[int] | None = None) -> Job:
+        """
+        Upsert job with optional MinHash signature
+        
+        :param session: SQLAlchemy session
+        :param item: Job item dict
+        :param location: Location object
+        :param signature: MinHash signature (list of 128 integers)
+        :return: Job object
+        """
+        values = {
+            "id": item.get("job_id"),
+            "posted_date": item.get("date_posted") or item.get("crawl_date"),
+            "source": item.get("source"),
+            "title": item.get("title"),
+            "company_name": item.get("company_name"),
+            "url": item.get("job_url"),
+            "salary_min": item.get("salary_min"),
+            "salary_max": item.get("salary_max"),
+            "salary_currency": item.get("salary_currency", "VND"),
+            "experience": item.get("experience_required"),
+            "location_id": location.id if location else None,
+        }
+        
+        # Add MinHash signature if provided
+        if signature is not None:
+            # Convert numpy types to Python int for psycopg2 compatibility
+            values["minhash_signature"] = [int(x) for x in signature]
+        
+        stmt = insert(Job).values(**values).on_conflict_do_update(
             index_elements=["id", "posted_date"],
             set_={"last_seen": "now()"},
         )
@@ -81,3 +113,245 @@ class JobRepository:
                     posted_date=job.posted_date,
                 ).on_conflict_do_nothing()
             )
+
+    def _extract_domains_from_item(self, item: dict) -> list[str]:
+        """
+        Extract domain list from item.
+        
+        Supports:
+        - item['domains'] (direct list from SkillExtractor)
+        - item['extra_data']['domains'] (from spider extra_data)
+        
+        :param item: Job item dict
+        :return: List of domain names
+        """
+        # Check direct 'domains' field
+        domains = item.get('domains')
+        if domains and isinstance(domains, list):
+            return [d.strip() for d in domains if d and d.strip()]
+        
+        # Check extra_data
+        extra_data = item.get('extra_data', {})
+        if isinstance(extra_data, dict):
+            domains = extra_data.get('domains')
+            if domains and isinstance(domains, list):
+                return [d.strip() for d in domains if d and d.strip()]
+        
+        return []
+
+    def _upsert_domains(self, session: Session, job_id: str, posted_date: str, domains_list: list[str]):
+        """
+        Upsert domains and create job-domain associations.
+        
+        :param session: SQLAlchemy session
+        :param job_id: Job UUID
+        :param posted_date: Job posting date
+        :param domains_list: List of domain names (e.g., ['Fintech', 'E-commerce'])
+        """
+        if not domains_list:
+            return
+        
+        for domain_name in domains_list:
+            if not domain_name or not domain_name.strip():
+                continue
+            
+            domain_name = domain_name.strip()
+            
+            # Insert domain if not exists
+            stmt = insert(Domain).values(
+                name=domain_name
+            ).on_conflict_do_nothing(index_elements=["name"])
+            session.execute(stmt)
+            
+            # Get domain ID
+            domain = session.query(Domain).filter_by(name=domain_name).first()
+            
+            if domain:
+                # Insert into job_domain association table
+                session.execute(
+                    insert(job_domain).values(
+                        job_id=job_id,
+                        domain_id=domain.id,
+                        posted_date=posted_date,
+                    ).on_conflict_do_nothing()
+                )
+                logger.debug(f"Associated job {job_id} with domain '{domain_name}'")
+
+    def check_lsh_candidates(self, session: Session, buckets: list[tuple[int, str]]) -> set[str]:
+        """
+        Query LSH buckets to find candidate duplicate job IDs.
+        
+        OPTIMIZED: Uses single IN clause with tuples instead of loop with OR conditions.
+        
+        :param session: SQLAlchemy session
+        :param buckets: List of (band_idx, bucket_hash) tuples (16 buckets from MinHash)
+        :return: Set of job_id candidates that share any bucket
+        
+        Example:
+            buckets = [(0, 'abc123'), (1, 'def456'), ...]
+            Returns: {'job_uuid_1', 'job_uuid_2', ...}
+        """
+        if not buckets:
+            return set()
+        
+        try:
+            # PostgreSQL supports: WHERE (band_idx, bucket_hash) IN ((0, 'abc'), (1, 'def'))
+            # Build the query with bound parameters
+            query = text("""
+                SELECT DISTINCT job_id 
+                FROM lsh_buckets 
+                WHERE (band_idx, bucket_hash) IN :buckets
+            """)
+            
+            # Execute query with tuple list
+            result = session.execute(
+                query,
+                {"buckets": tuple(buckets)}
+            )
+            
+            candidates = {row[0] for row in result}
+            
+            if candidates:
+                logger.debug(f"LSH query: Found {len(candidates)} candidate duplicates from {len(buckets)} buckets")
+            
+            return candidates
+            
+        except Exception as e:
+            logger.error(f"Error querying LSH buckets: {e}")
+            return set()
+
+    def get_signatures(self, session: Session, job_ids: list[str]) -> dict[str, list[int]]:
+        """
+        Fetch MinHash signatures for a list of job IDs.
+        
+        :param session: SQLAlchemy session
+        :param job_ids: List of job UUID strings
+        :return: Dictionary mapping job_id -> signature (list of 128 integers)
+        
+        Example:
+            job_ids = ['uuid-1', 'uuid-2']
+            Returns: {
+                'uuid-1': [12, 45, 67, ...],  # 128 integers
+                'uuid-2': [23, 56, 89, ...]
+            }
+        """
+        if not job_ids:
+            return {}
+        
+        try:
+            # Query to fetch signatures
+            query = text("""
+                SELECT id, minhash_signature 
+                FROM jobs 
+                WHERE id = ANY(:job_ids)
+                AND minhash_signature IS NOT NULL
+            """)
+            
+            result = session.execute(query, {"job_ids": list(job_ids)})
+            
+            # Build dictionary
+            signatures = {}
+            for row in result:
+                job_id = str(row[0])
+                signature = row[1]  # PostgreSQL ARRAY mapped to Python list
+                if signature:
+                    signatures[job_id] = signature
+            
+            logger.debug(f"Fetched {len(signatures)} signatures for {len(job_ids)} candidates")
+            return signatures
+            
+        except Exception as e:
+            logger.error(f"Error fetching MinHash signatures: {e}")
+            return {}
+
+    def save_lsh_buckets(self, session: Session, job_id: str, posted_date: str, buckets: list[tuple[int, str]]):
+        """
+        Save LSH bucket assignments for a job to enable future deduplication.
+        
+        :param session: SQLAlchemy session
+        :param job_id: Job UUID
+        :param posted_date: Job posting date (unused, kept for backward compatibility)
+        :param buckets: List of (band_idx, bucket_hash) tuples (typically 16 bands)
+        
+        Example:
+            buckets = [
+                (0, 'abc123def456'),
+                (1, 'def456ghi789'),
+                ...
+                (15, 'xyz789abc012')
+            ]
+        """
+        if not buckets:
+            logger.warning(f"No LSH buckets provided for job {job_id}")
+            return
+        
+        try:
+            # Batch insert using raw SQL for better performance
+            for band_idx, bucket_hash in buckets:
+                insert_sql = text("""
+                    INSERT INTO lsh_buckets (band_idx, bucket_hash, job_id)
+                    VALUES (:band_idx, :bucket_hash, :job_id)
+                    ON CONFLICT (band_idx, bucket_hash, job_id) DO NOTHING
+                """)
+                session.execute(insert_sql, {
+                    'band_idx': band_idx,
+                    'bucket_hash': bucket_hash,
+                    'job_id': job_id
+                })
+            
+            logger.debug(f"Saved {len(buckets)} LSH buckets for job {job_id}")
+            
+        except Exception as e:
+            logger.error(f"Error saving LSH buckets for job {job_id}: {e}")
+            raise
+
+    def get_job_minhash_signature(self, session: Session, job_id: str) -> list[tuple[int, str]] | None:
+        """
+        Retrieve stored LSH buckets for a job (for manual similarity checks).
+        
+        :param session: SQLAlchemy session
+        :param job_id: Job UUID
+        :return: List of (band_idx, bucket_hash) tuples or None if not found
+        """
+        try:
+            query = text("""
+                SELECT band_idx, bucket_hash 
+                FROM lsh_buckets 
+                WHERE job_id = :job_id 
+                ORDER BY band_idx
+            """)
+            
+            result = session.execute(query, {"job_id": job_id})
+            buckets = [(row[0], row[1]) for row in result]
+            
+            return buckets if buckets else None
+            
+        except Exception as e:
+            logger.error(f"Error retrieving LSH signature for job {job_id}: {e}")
+            return None
+
+    def delete_old_lsh_buckets(self, session: Session, days_old: int = 90):
+        """
+        Clean up old LSH buckets to prevent table bloat.
+        
+        :param session: SQLAlchemy session
+        :param days_old: Delete buckets older than this many days
+        :return: Number of rows deleted
+        """
+        try:
+            delete_sql = text("""
+                DELETE FROM lsh_buckets 
+                WHERE posted_date < NOW() - INTERVAL ':days days'
+            """)
+            
+            result = session.execute(delete_sql, {"days": days_old})
+            deleted_count = result.rowcount
+            session.commit()
+            
+            logger.info(f"Deleted {deleted_count} old LSH bucket entries (>{days_old} days)")
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"Error deleting old LSH buckets: {e}")
+            session.rollback()
+            return 0

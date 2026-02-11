@@ -11,5 +11,3 @@ class Skill(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(Text, unique=True, nullable=False)
     category = Column(Text)
-
-    jobs = relationship("Job", secondary="job_skills", back_populates="skills")
