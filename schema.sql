@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- BẮT BUỘC: Composite Primary Key cho TimescaleDB
     PRIMARY KEY (id, posted_date)
 );
+
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS minhash_signature INTEGER[];
 -- Biến thành Hypertable
 SELECT create_hypertable('jobs', 'posted_date', if_not_exists => TRUE);
 
