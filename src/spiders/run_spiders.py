@@ -10,6 +10,9 @@ from datetime import datetime
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 
+# Add src directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from spiders.spiders.itviec_spider import ItviecSpider
 from spiders.spiders.topcv_spider import TopcvSpider
 

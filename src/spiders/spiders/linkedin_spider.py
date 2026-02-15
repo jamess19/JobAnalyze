@@ -5,8 +5,8 @@ LinkedIn Spider - Scrape job listings from linkedin.com
 import scrapy
 import re
 from urllib.parse import urljoin
-from .base_spider import BaseJobSpider
-from ..items import JobItem
+from spiders.spiders.base_spider import BaseJobSpider
+from spiders.items import JobItem
 from datetime import datetime
 from config.config import LINKEDIN_EMAIL, LINKEDIN_PASSWORD
 

@@ -10,5 +10,3 @@ class Domain(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(Text, unique=True, nullable=False)
-
-    jobs = relationship("Job", secondary="job_domain", back_populates="domains")

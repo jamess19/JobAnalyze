@@ -5,8 +5,8 @@ TopCV Spider - Scrape job listings from topcv.vn
 import scrapy
 import re
 from urllib.parse import urljoin
-from .base_spider import BaseJobSpider
-from ..items import JobItem
+from spiders.spiders.base_spider import BaseJobSpider
+from spiders.items import JobItem
 
 
 class TopcvSpider(BaseJobSpider):

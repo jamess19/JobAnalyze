@@ -5,11 +5,12 @@ ITViec Spider - Scrape job listings from itviec.com
 import re
 import scrapy
 from urllib.parse import urljoin
-
-from utils import utils
-from .base_spider import BaseJobSpider
-from ..items import JobItem
 from datetime import timedelta, datetime
+
+# Use absolute imports
+from spiders.spiders.base_spider import BaseJobSpider
+from spiders.items import JobItem
+from utils import utils
 
 class ItviecSpider(BaseJobSpider):
     """Spider for scraping jobs from itviec.com"""

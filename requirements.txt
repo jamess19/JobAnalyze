@@ -26,5 +26,19 @@ openpyxl>=3.1.5
 # Multi-site job scraper (used for LinkedIn and other job boards)
 python-jobspy
 
+# Database ORM and PostgreSQL driver
+sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.9
+
+# MinHash LSH for deduplication
 datasketch>=1.6.4
+
+# Scrapy web scraping framework
+scrapy>=2.11.0
+scrapy-playwright>=0.0.36
+
+# NLP for skill extraction
+spacy>=3.7.0
+
+# Environment variable management
+python-dotenv>=1.0.0

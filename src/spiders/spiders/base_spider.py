@@ -8,8 +8,9 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import hashlib
 import random
+import uuid
 from scrapy_playwright.page import PageMethod
-from ..items import JobItem
+from spiders.items import JobItem
 from utils.field_extractor import FieldExtractor
 from utils.normalizer import DataNormalizer
 
@@ -77,19 +78,18 @@ class BaseJobSpider(scrapy.Spider):
 
     def generate_job_id(self, job_url: str, source: str = None) -> str:
         """
-        Generate unique job ID from URL and source
+        Generate unique UUID v5 from URL
+        Uses URL as name for deterministic UUID generation
+        Same URL always generates same UUID
+        
         :param job_url: Job URL
-        :param source: Source name (defaults to spider name)
-        :return: Unique job ID
+        :param source: Source name (ignored, kept for backward compatibility)
+        :return: UUID string
         """
-        if source is None:
-            source = self.name.replace("_spider", "")
-
-        # Create hash from URL for uniqueness
-        url_hash = hashlib.md5(job_url.encode()).hexdigest()[:8]
-        # Format: source_date_hash
-        job_id = f"{source}_{self.crawl_date.replace('-', '')}_{url_hash}"
-        return job_id
+        # Use URL_NAMESPACE to generate deterministic UUID v5
+        # This ensures same job URL always produces same UUID
+        job_uuid = uuid.uuid5(uuid.NAMESPACE_URL, job_url)
+        return str(job_uuid)
 
     def populate_metadata(self, item: JobItem, job_url: str) -> JobItem:
         """
