@@ -111,10 +111,13 @@ class TopcvSpider(BaseJobSpider):
             
             self.logger.debug(f"Following job URL: {job_url}")
 
+            # Brand pages need to wait for JS-rendered content
+            is_brand = '/brand/' in job_url
             yield self.make_request(
                 url=job_url,
                 callback=self.parse_job_detail,
                 meta={'basic_info': basic_info},
+                wait_for_selector='.premium-job-description__box--content, .box-info .content-tab' if is_brand else None,
             )
     
     def parse_relative_date(self, text: str) -> str:
@@ -188,6 +191,7 @@ class TopcvSpider(BaseJobSpider):
         # --- Salary ---
         salary_text = self._pick_info_value(response, 'Mức lương') or \
                       self._find_text_by_label(response, ['Mức lương', 'Salary']) or \
+                      self._extract_brand_salary(response) or \
                       basic_info.get('salary_list')  # THÊM: fallback từ list page
         if salary_text:
             item['salary_raw'] = salary_text
@@ -234,6 +238,10 @@ class TopcvSpider(BaseJobSpider):
         
         if not desc_blocks.get('description'):
              desc_blocks.update(self._extract_desc_blocks(response))
+
+        # Brand layout fallback (/brand/ URLs: FPT, VPBank, Sapo, ...)
+        if not desc_blocks.get('description'):
+            desc_blocks.update(self._extract_brand_content(response))
 
         item['description'] = desc_blocks.get('description')
         item['requirements'] = desc_blocks.get('requirements')
@@ -336,3 +344,95 @@ class TopcvSpider(BaseJobSpider):
             if title and value:
                 info[title.strip()] = value.strip()
         return info
+
+    def _extract_brand_content(self, response):
+        """
+        Extract content blocks from brand layout pages (/brand/ URLs: FPT, VPBank, Sapo, ...).
+        Scrapy CSS does not support :has()/:contains(), so XPath is used throughout.
+
+        Premium brand layout (.premium-job-description__box):
+            Container : div.premium-job-description__box
+            Title     : h2.premium-job-description__box--title
+            Content   : div.premium-job-description__box--content
+
+        Fallback – generic h3 → next sibling div (older brand pages).
+        """
+        blocks = {}
+
+        # ── Premium brand layout ──────────────────────────────────────────────
+        _premium_base = (
+            '//div[contains(@class,"premium-job-description__box")]'
+            '[.//h2[contains(@class,"premium-job-description__box--title")'
+            '       and contains(normalize-space(),"{kw}")]]'
+            '//*[contains(@class,"premium-job-description__box--content")]'
+        )
+
+        for key, keyword in [
+            ('description', 'Mô tả công việc'),
+            ('requirements', 'Yêu cầu ứng viên'),
+            ('benefits',     'Quyền lợi'),
+        ]:
+            text = response.xpath(_premium_base.format(kw=keyword)).xpath('string()').get()
+            if text and text.strip():
+                blocks[key] = text.strip()
+
+        # ── Fallback: h3 → next sibling div (older/other brand pages) ─────────
+        _h3_next_div = (
+            '//h3[contains(normalize-space(),"{kw}")]/following-sibling::div[1]'
+        )
+
+        for key, keyword in [
+            ('description', 'Mô tả công việc'),
+            ('requirements', 'Yêu cầu ứng viên'),
+            ('benefits',     'Quyền lợi'),
+        ]:
+            if not blocks.get(key):
+                text = response.xpath(_h3_next_div.format(kw=keyword)).xpath('string()').get()
+                if text and text.strip():
+                    blocks[key] = text.strip()
+
+        # ── box-info layout (VPBank, ...): div.box-info > h2.title + div.content-tab
+        _box_info = (
+            '//div[contains(@class,"box-info")]'
+            '[.//h2[contains(@class,"title") and contains(normalize-space(),"{kw}")]]'
+            '//div[contains(@class,"content-tab")]'
+        )
+
+        for key, keyword in [
+            ('description', 'Mô tả công việc'),
+            ('requirements', 'Yêu cầu ứng viên'),
+            ('benefits',     'Quyền lợi'),
+        ]:
+            if not blocks.get(key):
+                text = response.xpath(_box_info.format(kw=keyword)).xpath('string()').get()
+                if text and text.strip():
+                    blocks[key] = text.strip()
+
+        return blocks
+
+    def _extract_brand_salary(self, response):
+        """
+        Extract salary from brand layout.
+        Variant A (.basic-information-item): Sapo, FPT, ...
+        Variant B (.box-item + fa-money-bill-wave icon): VPBank, ...
+        """
+        # Variant A
+        salary = response.xpath(
+            '//div[contains(@class,"basic-information-item")]'
+            '[.//*[contains(@class,"basic-information-item__data--label")'
+            '      and contains(normalize-space(),"Mức lương")]]'
+            '//*[contains(@class,"basic-information-item__data--value")]'
+        ).xpath('string()').get()
+        if salary and salary.strip():
+            return salary.strip()
+
+        # Variant B – box-item with money icon
+        salary = response.xpath(
+            '//div[contains(@class,"box-item")]'
+            '[.//i[contains(@class,"fa-money-bill-wave") or contains(@class,"fa-money")]]'
+            '/div[not(.//i)]'
+        ).xpath('string()').get()
+        if salary and salary.strip():
+            return salary.strip()
+
+        return None
