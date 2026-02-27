@@ -4,6 +4,7 @@ TopCV Spider - Scrape job listings from topcv.vn
 
 import scrapy
 import re
+from datetime import datetime, timedelta
 from urllib.parse import urljoin
 from spiders.spiders.base_spider import BaseJobSpider
 from spiders.items import JobItem
@@ -22,6 +23,10 @@ class TopcvSpider(BaseJobSpider):
         'DOWNLOAD_DELAY': 4,  # Increase delay to avoid 429
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
+        'CONCURRENT_REQUESTS': 1,              
+        'AUTOTHROTTLE_ENABLED': True,          
+        'AUTOTHROTTLE_START_DELAY': 8,
+        'AUTOTHROTTLE_MAX_DELAY': 30,
         'RETRY_TIMES': 3,
         'RETRY_HTTP_CODES': [429, 500, 502, 503, 504],
     }
@@ -48,7 +53,7 @@ class TopcvSpider(BaseJobSpider):
         self.logger.info(f"Starting TopCV spider with keyword='{self.keyword}' (slug: {keyword_slug})")
 
         for page in range(self.start_page, self.end_page + 1):
-            url = f"{self.base_url}/tim-viec-lam-{keyword_slug}?type_keyword=1&page={page}&sba=1"
+            url = f"{self.base_url}/tim-viec-lam-{keyword_slug}?sort=new&type_keyword=1&page={page}&sba=1"
 
             self.logger.info(f"Requesting search page {page}: {url}")
 
@@ -99,6 +104,9 @@ class TopcvSpider(BaseJobSpider):
                 'salary_list': self.safe_extract_text(job_item, 'label.title-salary::text'),
                 'address_list': self.safe_extract_text(job_item, 'label.address .city-text::text'),
                 'exp_list': self.safe_extract_text(job_item, 'label.exp span::text'),
+                'date_posted_raw': job_item.xpath(
+                    'normalize-space(.//label[contains(@class,"label-update")]/text()[normalize-space()])'
+                ).get() or '',
             }
             
             self.logger.debug(f"Following job URL: {job_url}")
@@ -109,11 +117,28 @@ class TopcvSpider(BaseJobSpider):
                 meta={'basic_info': basic_info},
             )
     
+    def parse_relative_date(self, text: str) -> str:
+        """Convert '1 ngày trước', '3 giờ trước' → ISO date string"""
+        now = datetime.now()
+        text = text.strip().lower()
+
+        match = re.search(r'(\d+)\s*(giây|phút|giờ|ngày|tuần|tháng)', text)
+        if not match:
+            return ''
+
+        value, unit = int(match.group(1)), match.group(2)
+        delta_map = {
+            'giây': timedelta(seconds=value),
+            'phút': timedelta(minutes=value),
+            'giờ':  timedelta(hours=value),
+            'ngày': timedelta(days=value),
+            'tuần': timedelta(weeks=value),
+            'tháng': timedelta(days=value * 30),
+        }
+        result = now - delta_map.get(unit, timedelta(0))
+        return result.strftime('%Y-%m-%d')
+
     def parse_job_detail(self, response):
-        """
-        Parse job detail page - TopCV
-        Chỉ lấy các field có trong JobItem schema
-        """
         self.logger.info(f"Parsing job detail: {response.url}")
         
         basic_info = response.meta.get('basic_info', {})
@@ -124,7 +149,6 @@ class TopcvSpider(BaseJobSpider):
 
         # ==================== 1. TITLE ====================
         title = None
-        # Ưu tiên 1: Các selector phổ biến
         title_selectors = ['h1.job-detail__info--title', 'h1.title-job', '.box-info-job h1', '#header-job-info h1']
         for sel in title_selectors:
             t = response.css(sel).xpath('string()').get()
@@ -132,30 +156,48 @@ class TopcvSpider(BaseJobSpider):
                 title = t.strip()
                 break
         
-        # Ưu tiên 2: Lấy từ <title> tag (Fallback mạnh nhất cho trang Brand)
         if not title:
             page_title = response.css('title::text').get()
             if page_title:
-                # Format thường là: "Tên Job - Công Ty - TopCV"
                 title = page_title.split('-')[0].strip()
 
         item['title'] = title if title else basic_info.get('title')
 
-        # ==================== 2. SALARY & LOCATION ====================
+        # ==================== 2. COMPANY ====================
+        # SỬA: Gán company_name từ basic_info trước, sau đó override nếu trang detail có
+        item['company_name'] = basic_info.get('company', '')
+
+        company_box = response.css('.job-detail__company')
+        if company_box:
+            detail_company = company_box.css('.company-name-label .name::text').get(default='').strip()
+            if detail_company:
+                item['company_name'] = detail_company
+        
+        if not item.get('company_name'):
+            item['company_name'] = response.xpath('//meta[@property="og:site_name"]/@content').get()
+
+        # ==================== 3. DATE POSTED ====================
+        # THÊM: Parse date từ basic_info (trang list) 
+        date_posted_raw = basic_info.get('date_posted_raw', '')
+        if date_posted_raw:
+            item['date_posted'] = self.parse_relative_date(date_posted_raw)
+            self.logger.debug(f"date_posted from list page: '{date_posted_raw}' → '{item['date_posted']}'")
+
+        # ==================== 4. SALARY & LOCATION ====================
         
         # --- Salary ---
         salary_text = self._pick_info_value(response, 'Mức lương') or \
-                      self._find_text_by_label(response, ['Mức lương', 'Salary'])
+                      self._find_text_by_label(response, ['Mức lương', 'Salary']) or \
+                      basic_info.get('salary_list')  # THÊM: fallback từ list page
         if salary_text:
             item['salary_raw'] = salary_text
 
         # --- Location ---
         location_text = self._pick_info_value(response, 'Địa điểm') or \
-                        self._find_text_by_label(response, ['Địa điểm', 'Location', 'Nơi làm việc'])
+                        self._find_text_by_label(response, ['Địa điểm', 'Location', 'Nơi làm việc']) or \
+                        basic_info.get('address_list')  # THÊM: fallback từ list page
         
         if location_text:
-            # === LOGIC LÀM SẠCH LOCATION ===
-            # Cắt bỏ phần text rác thường bị dính vào cuối chuỗi
             stop_phrases = [
                 "Thời gian làm việc", "Hạn nộp", "Bạn có hài lòng", 
                 "Xem số người", "Cách thức ứng tuyển", "Tuyển dụng bởi",
@@ -164,38 +206,32 @@ class TopcvSpider(BaseJobSpider):
             
             clean_loc = location_text
             for phrase in stop_phrases:
-                # Tìm vị trí của từ khóa rác (không phân biệt hoa thường)
                 idx = clean_loc.lower().find(phrase.lower())
                 if idx != -1:
-                    clean_loc = clean_loc[:idx] # Cắt bỏ từ vị trí đó trở đi
+                    clean_loc = clean_loc[:idx]
 
             item['location_raw'] = clean_loc.strip(" -:,.")
             
-            # Parse City
             location_data = self.field_extractor.parse_location(item['location_raw'])
             extra_data['location_city'] = location_data.get('city')
             
             if len(item['location_raw']) > 10:
                 extra_data['location_address'] = item['location_raw']
 
-        # Deadline - lưu vào extra_data
+        # Deadline
         deadline_text = response.css('.job-detail__info--deadline-date::text').get() or \
                         self._find_text_by_label(response, ['Hạn nộp', 'Deadline'])
         
         if deadline_text:
-            # Chỉ lấy ngày tháng năm (VD: 31/01/2026) bỏ qua text thừa
             match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', deadline_text)
             if match:
                 extra_data['deadline'] = match.group(1)
             else:
                 extra_data['deadline'] = deadline_text.strip()
 
-        # ==================== 3. CONTENT ====================
-        
-        # Content
+        # ==================== 5. CONTENT ====================
         desc_blocks = self._smart_extract_content(response)
         
-        # Fallback cho layout cũ nếu smart extract không ra
         if not desc_blocks.get('description'):
              desc_blocks.update(self._extract_desc_blocks(response))
 
@@ -203,33 +239,21 @@ class TopcvSpider(BaseJobSpider):
         item['requirements'] = desc_blocks.get('requirements')
         item['benefits'] = desc_blocks.get('benefits')
 
-        # Company Info
-        company_box = response.css('.job-detail__company')
-        if item.get('company_name'):
-             pass
-        elif company_box:
-            item['company_name'] = company_box.css('.company-name-label .name::text').get(default='').strip()
-        else:
-             item['company_name'] = response.xpath('//meta[@property="og:site_name"]/@content').get()
-
         # Skills
         tags = response.css('.job-tags .item.search-from-tag::text').getall()
         if tags:
              item['skills_tags'] = [t.strip() for t in tags if t.strip()]
         
-        # Lấy thêm thông tin từ box bên phải (Size, Industry...)
         general_info = self._extract_general_info(response)
         extra_data.update(general_info)
         
-        # Infer Fields
-        # full_text = f"{description} {requirements}"
-        full_text = f"{item['description']} {item['requirements']}"
+        # SỬA: Tránh "None None" khi concat
+        full_text = f"{item.get('description') or ''} {item.get('requirements') or ''}"
         if item.get('title'):
             extra_data['job_category'] = self.normalizer.infer_job_category(item['title'], full_text)
             extra_data['job_level'] = self.normalizer.infer_job_level(item['title'])
         extra_data['work_mode'] = self.normalizer.infer_work_mode(full_text, item.get('title'))
         
-        # Lưu extra_data vào item
         item['extra_data'] = extra_data
 
         self.jobs_scraped += 1

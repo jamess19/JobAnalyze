@@ -86,7 +86,10 @@ class ItviecSpider(BaseJobSpider):
         self.logger.info(f"Starting ITViec spider with keyword='{keyword}', location='{location}'")
 
         for page in range(self.start_page, self.end_page + 1):
-            url = f"{self.base_url}/it-jobs/{keyword}/{location}?page={page}"
+            if location:
+                url = f"{self.base_url}/it-jobs/{keyword}/{location}?page={page}"
+            else:
+                url = f"{self.base_url}/it-jobs/{keyword}?page={page}"
 
             self.logger.info(f"Requesting search page {page}: {url}")
 
