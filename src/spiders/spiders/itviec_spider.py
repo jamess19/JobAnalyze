@@ -4,7 +4,7 @@ ITViec Spider - Scrape job listings from itviec.com
 
 import re
 import scrapy
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 from datetime import timedelta, datetime, date
 
 # Use absolute imports
@@ -32,9 +32,10 @@ class ItviecSpider(BaseJobSpider):
     DATE_FOLLOW_DAYS    = 2    # follow detail page only if posted_date >= T - N days
     DATE_STOP_DAYS      = 3    # stop pagination if posted_date < T - N days
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, start_url: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.base_url = "https://itviec.com"
+        self.start_url = start_url  # Direct URL to crawl (overrides keyword/location)
 
         # Smart crawl state
         self._max_date: date | None = None   # T = max(posted_date) from DB
@@ -69,35 +70,48 @@ class ItviecSpider(BaseJobSpider):
         
         return keyword, location
 
+    @staticmethod
+    def _paginate_url(base_url: str, page: int) -> str:
+        """Return base_url with page= set to the given page number."""
+        parsed = urlparse(base_url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        params['page'] = [str(page)]
+        new_query = urlencode({k: v[0] for k, v in params.items()})
+        return urlunparse(parsed._replace(query=new_query))
+
     def parse_relative_date(self, raw_text):
         if not raw_text:
             return datetime.now().strftime('%Y-%m-%d')
         
         text = raw_text.lower().strip()
-        # Xóa từ "posted" và khoảng trắng thừa, ví dụ: "posted \n 1 day ago" -> "1 day ago"
-        text = re.sub(r'\s+', ' ', text).replace('posted', '').strip()
+        # Chuẩn hóa: xóa prefix "posted" (EN) và "đăng" (VI)
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'\b(posted|đăng|super hot|hot)\b', '', text).strip()
         
         today = datetime.now()
         delta = timedelta(days=0)
 
         try:
-            if 'today' in text or 'just now' in text or 'hour' in text or 'minute' in text:
+            # English: today / just now / hours / minutes
+            # Vietnamese: hôm nay / vừa đăng / giờ trước / phút trước
+            if any(k in text for k in ['today', 'just now', 'hôm nay', 'vừa đăng']):
                 delta = timedelta(days=0)
-            elif 'yesterday' in text:
+            elif any(k in text for k in ['hour', 'giờ', 'minute', 'phút', 'second', 'giây']):
+                delta = timedelta(days=0)
+            elif any(k in text for k in ['yesterday', 'hôm qua']):
                 delta = timedelta(days=1)
-            elif 'day' in text:
-                # Tìm số trong chuỗi "2 days ago", "1 day ago"
-                # Xử lý trường hợp "30+ days ago" -> lấy 30
+            elif any(k in text for k in ['day', 'ngày']):
                 number = re.search(r'(\d+)', text)
                 if number:
-                    days = int(number.group(1))
-                    delta = timedelta(days=days)
-            elif 'month' in text:
-                # Ước lượng 1 tháng = 30 ngày
+                    delta = timedelta(days=int(number.group(1)))
+            elif any(k in text for k in ['week', 'tuần']):
                 number = re.search(r'(\d+)', text)
                 if number:
-                    months = int(number.group(1))
-                    delta = timedelta(days=months * 30)
+                    delta = timedelta(weeks=int(number.group(1)))
+            elif any(k in text for k in ['month', 'tháng']):
+                number = re.search(r'(\d+)', text)
+                if number:
+                    delta = timedelta(days=int(number.group(1)) * 30)
                     
             post_date = today - delta
             return post_date.strftime('%Y-%m-%d')
@@ -108,17 +122,22 @@ class ItviecSpider(BaseJobSpider):
     def start_requests(self):
         """Start from page 1 and auto-paginate until stop condition is met."""
         self._init_db()
-        keyword, location = self.normalize_search_params()
 
-        self.logger.info(f"Starting ITViec spider with keyword='{keyword}', location='{location}'")
-
-        if location:
-            url = f"{self.base_url}/it-jobs/{keyword}/{location}?page=1"
+        if self.start_url:
+            base_search_url = self.start_url.split('?')[0] + ('?' + self.start_url.split('?')[1] if '?' in self.start_url else '')
+            # Strip any existing page= so _paginate_url is the sole authority
+            parsed = urlparse(self.start_url)
+            params = {k: v[0] for k, v in parse_qs(parsed.query, keep_blank_values=True).items() if k != 'page'}
+            base_search_url = urlunparse(parsed._replace(query=urlencode(params)))
+            self.logger.info(f"Starting ITViec spider with URL: {base_search_url}")
         else:
-            url = f"{self.base_url}/it-jobs/{keyword}?page=1"
+            keyword, location = self.normalize_search_params()
+            self.logger.info(f"Starting ITViec spider with keyword='{keyword}', location='{location}'")
+            base_search_url = f"{self.base_url}/it-jobs/{keyword}/{location}" if location else f"{self.base_url}/it-jobs/{keyword}"
 
-        self.logger.info(f"Requesting search page 1: {url}")
-        yield self.make_request(url=url, callback=self.parse, meta={'page': 1, 'keyword': keyword, 'location': location})
+        first_url = self._paginate_url(base_search_url, 1)
+        self.logger.info(f"Requesting search page 1: {first_url}")
+        yield self.make_request(url=first_url, callback=self.parse, meta={'page': 1, 'base_search_url': base_search_url})
     
     def parse(self, response):
         """
@@ -132,9 +151,8 @@ class ItviecSpider(BaseJobSpider):
         if self.should_stop:
             return
 
-        page     = response.meta.get('page', 1)
-        keyword  = response.meta.get('keyword')
-        location = response.meta.get('location')
+        page            = response.meta.get('page', 1)
+        base_search_url = response.meta.get('base_search_url', '')
         self.logger.info(f"Parsing search page {page}: {response.url}")
 
         cutoff_follow = self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)
@@ -159,12 +177,18 @@ class ItviecSpider(BaseJobSpider):
             absolute_url = urljoin(self.base_url, job_url)
 
             # --- Date filter (best-effort từ list card) ---
-            # ITViec hiển thị "Posted X days ago", "Posted today", v.v. trong text node
+            # ITViec EN: "Posted X days ago" / "HOT Posted 2 days ago"
+            # ITViec VI: "Đăng X ngày trước" / "HOT Đăng 2 giờ trước"
             date_raw = job_item.xpath(
-                './/text()[contains(., "days ago") or contains(., "day ago") '
-                'or contains(., "hours ago") or contains(., "hour ago") '
-                'or contains(., "yesterday") or contains(., "today") '
-                'or contains(., "just now") or contains(., "minutes ago")]'
+                './/text()['
+                'contains(., "days ago") or contains(., "day ago") or '
+                'contains(., "hours ago") or contains(., "hour ago") or '
+                'contains(., "yesterday") or contains(., "today") or '
+                'contains(., "just now") or contains(., "minutes ago") or '
+                'contains(., "ngày trước") or contains(., "giờ trước") or '
+                'contains(., "phút trước") or contains(., "tuần trước") or '
+                'contains(., "hôm nay") or contains(., "vừa đăng")'
+                ']'
             ).get()
             posted_date = None
             if date_raw:
@@ -209,15 +233,12 @@ class ItviecSpider(BaseJobSpider):
         # --- Auto-paginate ---
         if not stop_pagination and not self.should_stop:
             next_page = page + 1
-            if location:
-                next_url = f"{self.base_url}/it-jobs/{keyword}/{location}?page={next_page}"
-            else:
-                next_url = f"{self.base_url}/it-jobs/{keyword}?page={next_page}"
+            next_url = self._paginate_url(base_search_url, next_page)
             self.logger.info(f"Requesting search page {next_page}: {next_url}")
             yield self.make_request(
                 url=next_url,
                 callback=self.parse,
-                meta={'page': next_page, 'keyword': keyword, 'location': location},
+                meta={'page': next_page, 'base_search_url': base_search_url},
             )
     
     def parse_job_detail(self, response):
@@ -243,10 +264,17 @@ class ItviecSpider(BaseJobSpider):
         title_elem = response.css('div.preview-job-header h2::text').get()
         item['title'] = title_elem.strip() if title_elem else basic_info.get('title')
         
-        # Date posted in the format: posted x days ago, use the parse function to calculate the timestamp
-        date_posted_raw = response.xpath('//div[contains(@class, "preview-header-item")]//svg[use[contains(@href, "clock")]]/following-sibling::span/text()').get()
+        # Date posted — try multiple selectors from most to least specific
+        # 1. Header item span (may have clock SVG sibling)
+        # 2. Any span/p containing "Posted … ago" in the header area
+        # 3. Broad text node fallback (scoped to first match = main job, before "More jobs" section)
+        date_posted_raw = (
+            response.xpath('//div[contains(@class,"preview-header-item")]//span[contains(.,"ago") or contains(.,"today") or contains(.,"yesterday") or contains(.,"trước") or contains(.,"hôm nay")]/text()').get()
+            or response.xpath('//text()[contains(.,"Posted") and (contains(.,"ago") or contains(.,"today") or contains(.,"yesterday"))]').get()
+            or response.xpath('//text()[contains(.,"Đăng") and (contains(.,"trước") or contains(.,"hôm nay") or contains(.,"vừa đăng"))]').get()
+        )
         if date_posted_raw:
-            item['date_posted'] = self.parse_relative_date(date_posted_raw)
+            item['date_posted'] = self.parse_relative_date(date_posted_raw.strip())
         elif basic_info.get('posted_date'):
             # Fallback to date extracted from list page
             item['date_posted'] = basic_info['posted_date']

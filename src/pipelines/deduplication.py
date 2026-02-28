@@ -93,8 +93,9 @@ class DeduplicationPipeline:
                 
                 if is_duplicate:
                     self.stats["near_dup"] += 1
-                    # Update consecutive dup counter on spider
-                    if hasattr(spider, 'consecutive_dup_count'):
+                    # Update consecutive dup counter on spider (VIP jobs are excluded)
+                    is_vip = adapter.get('is_vip', False)
+                    if hasattr(spider, 'consecutive_dup_count') and not is_vip:
                         spider.consecutive_dup_count += 1
                         max_dups = getattr(spider, 'MAX_CONSECUTIVE_DUPS', 15)
                         spider.logger.debug(
@@ -102,9 +103,9 @@ class DeduplicationPipeline:
                         )
                         if spider.consecutive_dup_count >= max_dups:
                             spider.logger.info(
-                                f"{max_dups} consecutive duplicates reached, stopping pagination."
+                                f"{max_dups} consecutive duplicates reached, closing spider immediately."
                             )
-                            spider.should_stop = True
+                            spider.crawler.engine.close_spider(spider, 'consecutive_duplicates_limit_reached')
                     raise DropItem(
                         f"Near-duplicate detected: {url} is {similarity_score:.2%} similar to job {duplicate_job_id} (threshold={self.JACCARD_THRESHOLD})"
                     )

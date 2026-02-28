@@ -4,8 +4,9 @@ TopCV Spider - Scrape job listings from topcv.vn
 
 import scrapy
 import re
+import uuid
 from datetime import datetime, timedelta, date
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 from spiders.spiders.base_spider import BaseJobSpider
 from spiders.items import JobItem
 
@@ -19,32 +20,44 @@ class TopcvSpider(BaseJobSpider):
     # Enable Playwright for this spider
     use_playwright = True
 
+    # Anti-429 features
+    rotate_user_agent = True      # RotatingUserAgentMiddleware
+    rate_limit_backoff = True     # RateLimitBackoffMiddleware
+    referer_base = "https://www.topcv.vn/"
+
     # Smart crawl settings
     MAX_CONSECUTIVE_DUPS = 15   # stop if this many consecutive duplicate jobs
     DATE_FOLLOW_DAYS    = 2    # follow detail page only if posted_date >= T - N days
     DATE_STOP_DAYS      = 3    # stop pagination if posted_date < T - N days
 
     custom_settings = {
-        'DOWNLOAD_DELAY': 4,  # Increase delay to avoid 429
+        'DOWNLOAD_DELAY': 6,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
         'CONCURRENT_REQUESTS': 1,              
         'AUTOTHROTTLE_ENABLED': True,          
-        'AUTOTHROTTLE_START_DELAY': 8,
-        'AUTOTHROTTLE_MAX_DELAY': 30,
-        'RETRY_TIMES': 3,
-        'RETRY_HTTP_CODES': [429, 500, 502, 503, 504],
+        'AUTOTHROTTLE_START_DELAY': 10,
+        'AUTOTHROTTLE_MAX_DELAY': 60,
+        'AUTOTHROTTLE_TARGET_CONCURRENCY': 0.5,  # more conservative
+        'RETRY_TIMES': 2,          # let RateLimitBackoffMiddleware handle 429
+        'RETRY_HTTP_CODES': [500, 502, 503, 504],  # exclude 429 from default retry
     }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, start_url: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.base_url = "https://www.topcv.vn"
         self.seen_jobs = set()
+        self.start_url = start_url  # Direct URL to crawl (overrides keyword slug)
+
+        # Unique Playwright browser context per run → fresh cookies/session each time
+        self._playwright_ctx = f"topcv_{uuid.uuid4().hex[:10]}"
+        self.logger.info(f"Playwright context: {self._playwright_ctx}")
 
         # Smart crawl state
         self._max_date: date | None = None   # T = max(posted_date) from DB
         self.consecutive_dup_count = 0       # updated by DeduplicationPipeline
         self.should_stop = False             # set True to stop pagination
+        self.vip_skipped_count = 0           # VIP/promoted jobs skipped due to old date
 
     def _init_db(self):
         """Load T = max(posted_date) from DB."""
@@ -62,6 +75,15 @@ class TopcvSpider(BaseJobSpider):
             self._max_date = datetime.now().date()
         self.logger.info(f"Smart crawl: T = {self._max_date} (DATE_FOLLOW >= T-{self.DATE_FOLLOW_DAYS}d, DATE_STOP < T-{self.DATE_STOP_DAYS}d, MAX_DUP={self.MAX_CONSECUTIVE_DUPS})")
     
+    @staticmethod
+    def _paginate_url(base_url: str, page: int) -> str:
+        """Return base_url with page= set to the given page number."""
+        parsed = urlparse(base_url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        params['page'] = [str(page)]
+        new_query = urlencode({k: v[0] for k, v in params.items()})
+        return urlunparse(parsed._replace(query=new_query))
+
     def slugify(self, text: str) -> str:
         """Convert text to slug for URL"""
         import unicodedata
@@ -75,32 +97,41 @@ class TopcvSpider(BaseJobSpider):
     def start_requests(self):
         """Start from page 1 and auto-paginate until stop condition is met."""
         self._init_db()
-        keyword_slug = self.slugify(self.keyword)
 
-        self.logger.info(f"Starting TopCV spider with keyword='{self.keyword}' (slug: {keyword_slug})")
+        if self.start_url:
+            # Strip any existing page= so _paginate_url is the sole authority
+            parsed = urlparse(self.start_url)
+            params = {k: v[0] for k, v in parse_qs(parsed.query, keep_blank_values=True).items() if k != 'page'}
+            base_search_url = urlunparse(parsed._replace(query=urlencode(params)))
+            self.logger.info(f"Starting TopCV spider with URL: {base_search_url}")
+        else:
+            keyword_slug = self.slugify(self.keyword)
+            self.logger.info(f"Starting TopCV spider with keyword='{self.keyword}' (slug: {keyword_slug})")
+            base_search_url = f"{self.base_url}/tim-viec-lam-{keyword_slug}?sort=new&type_keyword=1&sba=1"
 
-        url = f"{self.base_url}/tim-viec-lam-{keyword_slug}?sort=new&type_keyword=1&page=1&sba=1"
-        self.logger.info(f"Requesting search page 1: {url}")
+        first_url = self._paginate_url(base_search_url, 1)
+        self.logger.info(f"Requesting search page 1: {first_url}")
         yield self.make_request(
-            url=url,
+            url=first_url,
             callback=self.parse,
-            meta={'page': 1, 'keyword_slug': keyword_slug},
+            meta={'page': 1, 'base_search_url': base_search_url, 'playwright_context': self._playwright_ctx},
             page_timeout=60000,
         )
     
     def parse(self, response):
         """
         Parse search results page.
-        - Date filter: chỉ follow job có posted_date >= T - DATE_FOLLOW_DAYS
-        - Dừng pagination: posted_date < T - DATE_STOP_DAYS (quá cũ)
-        - Dừng pagination: should_stop = True (do DeduplicationPipeline set khi đủ consecutive dups)
-        - Auto-paginate không giới hạn trang
+        - VIP job (class có bg-yellow, bg-highlight, hoặc bất kỳ bg-*): dùng cutoff_follow (T-based).
+          Nếu quá cũ (< T-2d) thì skip, không dừng pagination, không đếm consecutive dup.
+        - Job thường: date filter T-based (cutoff_follow / cutoff_stop) + đếm consecutive dup.
+        - Dừng pagination: posted_date < cutoff_stop (job thường) hoặc should_stop = True.
+        - Auto-paginate không giới hạn trang.
         """
         if self.should_stop:
             return
 
-        page         = response.meta.get('page', 1)
-        keyword_slug = response.meta.get('keyword_slug', self.slugify(self.keyword))
+        page            = response.meta.get('page', 1)
+        base_search_url = response.meta.get('base_search_url', '')
         self.logger.info(f"Parsing search page {page}: {response.url}")
 
         cutoff_follow = self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)
@@ -131,36 +162,48 @@ class TopcvSpider(BaseJobSpider):
                 continue
             self.seen_jobs.add(job_url)
 
-            # --- Date filter ---
+            # --- Detect VIP/promoted: class có thêm bg-* ngoài các class chuẩn ---
+            # Normal: "job-item-search-result job-ta"
+            # VIP:    "job-item-search-result bg-yellow job-ta"
+            #         "job-item-search-result bg-highlight job-ta", etc.
+            item_class = job_item.attrib.get('class', '')
+            is_vip = bool(re.search(r'\bbg-\w+', item_class))
+
+            # --- Parse date từ list card ---
             date_posted_raw = job_item.xpath(
                 'normalize-space(.//label[contains(@class,"label-update")]/text()[normalize-space()])'
             ).get() or ''
 
-            # Promoted/advertised jobs (bg-yellow) don't have a reliable posted_date
-            # and may appear out of chronological order — skip date filter, let LSH decide.
-            is_promoted = 'bg-yellow' in (job_item.attrib.get('class') or '')
-
             posted_date = None
-            if date_posted_raw and not is_promoted:
+            if date_posted_raw:
                 parsed_str = self.parse_relative_date(date_posted_raw)
                 if parsed_str:
                     posted_date = datetime.strptime(parsed_str, '%Y-%m-%d').date()
-            elif is_promoted:
-                self.logger.debug(f"Promoted job — skipping date filter: {job_url}")
 
-            if posted_date:
-                # Quá cũ → dừng toàn bộ pagination
-                if posted_date < cutoff_stop:
-                    self.logger.info(
-                        f"Job too old ({posted_date} < T-{self.DATE_STOP_DAYS}d={cutoff_stop}), stopping pagination."
+            if is_vip:
+                # ---------- VIP JOB: T-based cutoff_follow, không dừng pagination ----------
+                if posted_date and posted_date < cutoff_follow:
+                    self.vip_skipped_count += 1
+                    self.logger.debug(
+                        f"VIP job too old ({posted_date} < T-{self.DATE_FOLLOW_DAYS}d={cutoff_follow}), "
+                        f"skipping (total skipped: {self.vip_skipped_count}): {job_url}"
                     )
-                    stop_pagination = True
-                    break
+                    continue   # skip card, never stops pagination
+                # VIP + đủ mới (hoặc không parse được date) → fall through
 
-                # Không đủ recent → skip card này, tiếp tục
-                if posted_date < cutoff_follow:
-                    self.logger.debug(f"Skipping (date {posted_date} < cutoff {cutoff_follow}): {job_url}")
-                    continue
+            else:
+                # ---------- NORMAL JOB: T-based date filter ----------
+                if posted_date:
+                    if posted_date < cutoff_stop:
+                        self.logger.info(
+                            f"Job too old ({posted_date} < T-{self.DATE_STOP_DAYS}d={cutoff_stop}), stopping pagination."
+                        )
+                        stop_pagination = True
+                        break
+
+                    if posted_date < cutoff_follow:
+                        self.logger.debug(f"Skipping (date {posted_date} < cutoff {cutoff_follow}): {job_url}")
+                        continue
 
             # Extract basic info from search page
             basic_info = {
@@ -171,6 +214,7 @@ class TopcvSpider(BaseJobSpider):
                 'address_list': self.safe_extract_text(job_item, 'label.address .city-text::text'),
                 'exp_list': self.safe_extract_text(job_item, 'label.exp span::text'),
                 'date_posted_raw': date_posted_raw,
+                'is_vip': is_vip,
             }
 
             self.logger.debug(f"Following job URL: {job_url}")
@@ -180,7 +224,7 @@ class TopcvSpider(BaseJobSpider):
             yield self.make_request(
                 url=job_url,
                 callback=self.parse_job_detail,
-                meta={'basic_info': basic_info},
+                meta={'basic_info': basic_info, 'playwright_context': self._playwright_ctx},
                 wait_for_selector='.premium-job-description__box--content, .box-info .content-tab' if is_brand else None,
                 page_timeout=60000,
             )
@@ -188,12 +232,12 @@ class TopcvSpider(BaseJobSpider):
         # --- Auto-paginate ---
         if not stop_pagination and not self.should_stop:
             next_page = page + 1
-            next_url = f"{self.base_url}/tim-viec-lam-{keyword_slug}?sort=new&type_keyword=1&page={next_page}&sba=1"
+            next_url = self._paginate_url(base_search_url, next_page)
             self.logger.info(f"Requesting search page {next_page}: {next_url}")
             yield self.make_request(
                 url=next_url,
                 callback=self.parse,
-                meta={'page': next_page, 'keyword_slug': keyword_slug},
+                meta={'page': next_page, 'base_search_url': base_search_url, 'playwright_context': self._playwright_ctx},
                 page_timeout=60000,
             )
     
@@ -228,6 +272,7 @@ class TopcvSpider(BaseJobSpider):
         basic_info = response.meta.get('basic_info', {})
         item = self.create_job_item()
         item = self.populate_metadata(item, response.url)
+        item['is_vip'] = basic_info.get('is_vip', False)
         
         extra_data = {}
 
@@ -373,6 +418,11 @@ class TopcvSpider(BaseJobSpider):
 
         self.jobs_scraped += 1
         yield item
+
+    def closed(self, reason):
+        """Override to include premium-job stats in the final summary."""
+        super().closed(reason)
+        self.logger.info(f"  VIP/promoted jobs skipped (too old): {self.vip_skipped_count}")
 
     # ================= CÁC HÀM PHỤ (HELPER METHODS) - BẮT BUỘC PHẢI CÓ =================
 

@@ -17,7 +17,7 @@ from spiders.spiders.itviec_spider import ItviecSpider
 from spiders.spiders.topcv_spider import TopcvSpider
 
 
-def run_spider(spider_name, keyword, location, start_page, end_page):
+def run_spider(spider_name, keyword, location, start_page, end_page, start_url=None):
     """
     Run a specific spider
     
@@ -63,18 +63,24 @@ def run_spider(spider_name, keyword, location, start_page, end_page):
         print(f"\n{'='*60}")
         print(f"Starting {spider_class.name}")
         print(f"{'='*60}")
-        print(f"Keyword: {keyword}")
-        print(f"Location: {location}")
-        print(f"Pages: {start_page} to {end_page}")
+        if start_url:
+            print(f"URL: {start_url}")
+        else:
+            print(f"Keyword: {keyword}")
+            print(f"Location: {location}")
+            print(f"Pages: {start_page} to {end_page}")
         print(f"{'='*60}\n")
-        
-        process.crawl(
-            spider_class,
-            keyword=keyword,
-            location=location,
-            start_page=start_page,
-            end_page=end_page
-        )
+
+        if start_url:
+            process.crawl(spider_class, start_url=start_url)
+        else:
+            process.crawl(
+                spider_class,
+                keyword=keyword,
+                location=location,
+                start_page=start_page,
+                end_page=end_page
+            )
     
     # Start crawling
     print(f"\n⏳ Starting crawl process...")
@@ -104,17 +110,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
             Examples:
-            # Run ITViec spider for software engineer jobs in Ho Chi Minh
-            python run_spiders.py itviec -k "software engineer" -l "Ho Chi Minh" -s 1 -e 3
-            
-            # Run TopCV spider for data engineer jobs
-            python run_spiders.py topcv -k "data engineer" -l "Ha Noi" -s 1 -e 2
-            
-            # Run all spiders
-            python run_spiders.py all -k "python developer" -l "Ho Chi Minh" -s 1 -e 1
-            
-            # Run with default settings
-            python run_spiders.py itviec"""
+            # Run with a direct URL (recommended)
+            python run_spiders.py itviec --url "https://itviec.com/viec-lam-it"
+            python run_spiders.py topcv --url "https://www.topcv.vn/tim-viec-lam-cong-nghe-thong-tin-cr257?sort=new&type_keyword=1&category_family=r257"
+
+            # Legacy: Run by keyword
+            python run_spiders.py itviec -k "software engineer" -l "Ho Chi Minh"
+            python run_spiders.py topcv -k "data engineer"""
         )
     
     parser.add_argument(
@@ -123,6 +125,12 @@ def main():
         help='Spider to run (itviec, topcv, or all)'
     )
     
+    parser.add_argument(
+        '-u', '--url',
+        default=None,
+        help='Direct search URL to crawl (overrides keyword/location)'
+    )
+
     parser.add_argument(
         '-k', '--keyword',
         default='software engineer',
@@ -163,7 +171,8 @@ def main():
         keyword=args.keyword,
         location=args.location,
         start_page=args.start_page,
-        end_page=args.end_page
+        end_page=args.end_page,
+        start_url=args.url,
     )
     
     # Exit with appropriate code

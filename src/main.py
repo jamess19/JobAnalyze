@@ -16,23 +16,17 @@ def build_spider_configs(config: dict, spider_filter: str = None) -> list[dict]:
     configs = []
     
     # ITViec
-    if config.get("itviec_keywords"):
+    if config.get("itviec_urls"):
         configs.append({
             "spider": "itviec",
-            "keywords": config["itviec_keywords"],
-            "location": config.get("itviec_location", "ho-chi-minh"),
-            "start_page": config.get("itviec_start_page", 1),  # Fix hardcode
-            "end_page": config.get("itviec_end_page", 2),       # Fix hardcode
+            "urls": config["itviec_urls"],
         })
-    
+
     # TopCV
-    if config.get("topcv_keywords"):
+    if config.get("topcv_urls"):
         configs.append({
             "spider": "topcv",
-            "keywords": config["topcv_keywords"],
-            "location": config.get("topcv_location", "Ho Chi Minh"),
-            "start_page": config.get("topcv_start_page", 1),
-            "end_page": config.get("topcv_end_page", 1),
+            "urls": config["topcv_urls"],
         })
     
     # LinkedIn

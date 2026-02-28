@@ -27,34 +27,17 @@ DEFAULT_CONFIG = {
     "output_folder": OUTPUT_FOLDER,
     "token_file": TOKEN_FILE_PATH,
     "drive_folder_id": FOLDER_ID,
-    # Cấu hình ITViec
-    "itviec_keywords": ["data analyst",
-        "data engineer",
-        "data scientist",
-        "backend developer",
-        "frontend developer",
-        "devops engineer",
-        "qa engineer",
-        "mobile developer",
-        "software engineer"],
-    "itviec_location": "",
-    "itviec_start_page": 1,
-    "itviec_end_page": 5,
+    # Cấu hình ITViec — crawl category pages thay vì từng keyword slug
+    "itviec_urls": [
+        "https://itviec.com/it-jobs",
+    ],
     # Cấu hình LinkedIn
     "linkedin_keywords": ["data analyst"],
     "linkedin_location": "Vietnam",
     "linkedin_results_wanted": 50,
     "linkedin_hours_old": 72,
-    # Cấu hình TopCV
-    "topcv_keywords": ["Data Analyst",
-        "Data Engineer",
-        "Data Scientist",
-        "Backend Developer",
-        "Frontend Developer",
-        "DevOps Engineer",
-        "QA Engineer",
-        "Mobile Developer",
-        "Software Engineer"],
-    "topcv_start_page": 1,
-    "topcv_end_page": 5,
+    # Cấu hình TopCV — crawl category pages thay vì từng keyword slug
+    "topcv_urls": [
+        "https://www.topcv.vn/tim-viec-lam-cong-nghe-thong-tin-cr257?sort=new&type_keyword=1&category_family=r257&saturday_status=0",
+    ],
 }

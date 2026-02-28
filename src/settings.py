@@ -76,6 +76,8 @@ DEFAULT_REQUEST_HEADERS = {
 # Enable or disable downloader middlewares
 # See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
 DOWNLOADER_MIDDLEWARES = {
+   "spiders.middlewares.RotatingUserAgentMiddleware": 400,
+   "spiders.middlewares.RateLimitBackoffMiddleware": 450,
    "spiders.middlewares.SpidersDownloaderMiddleware": 543,
 }
 

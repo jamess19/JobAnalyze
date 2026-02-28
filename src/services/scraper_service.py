@@ -27,14 +27,21 @@ class ScraperService:
             spider_class = SPIDER_CLASSES.get(spider_name)
             if not spider_class:
                 continue
-            for keyword in config.get("keywords", []):
-                process.crawl(
-                    spider_class,
-                    keyword=keyword,
-                    location=config.get("location", ""),
-                    start_page=config.get("start_page", 1),
-                    end_page=config.get("end_page", 1),
-                )
+
+            if config.get("urls"):
+                # URL-based crawl: one instance per URL
+                for url in config["urls"]:
+                    process.crawl(spider_class, start_url=url)
+            else:
+                # Legacy keyword-based crawl (LinkedIn still uses this)
+                for keyword in config.get("keywords", []):
+                    process.crawl(
+                        spider_class,
+                        keyword=keyword,
+                        location=config.get("location", ""),
+                        start_page=config.get("start_page", 1),
+                        end_page=config.get("end_page", 1),
+                    )
 
         process.start()
 
