@@ -61,6 +61,7 @@ class TopcvSpider(BaseJobSpider):
                 url=url,
                 callback=self.parse,
                 meta={'page': page},
+                page_timeout=60000,
             )
     
     def parse(self, response):
@@ -111,13 +112,14 @@ class TopcvSpider(BaseJobSpider):
             
             self.logger.debug(f"Following job URL: {job_url}")
 
-            # Brand pages need to wait for JS-rendered content
+            # Brand pages need extra wait for JS-rendered content
             is_brand = '/brand/' in job_url
             yield self.make_request(
                 url=job_url,
                 callback=self.parse_job_detail,
                 meta={'basic_info': basic_info},
                 wait_for_selector='.premium-job-description__box--content, .box-info .content-tab' if is_brand else None,
+                page_timeout=60000,  # 60s cho tất cả pages, TopcV load chậm
             )
     
     def parse_relative_date(self, text: str) -> str:
@@ -125,9 +127,13 @@ class TopcvSpider(BaseJobSpider):
         now = datetime.now()
         text = text.strip().lower()
 
+        # Handle "Hôm nay", "Vừa đăng"
+        if any(k in text for k in ['hôm nay', 'vừa đăng', 'just now', 'today']):
+            return now.strftime('%Y-%m-%d')
+
         match = re.search(r'(\d+)\s*(giây|phút|giờ|ngày|tuần|tháng)', text)
         if not match:
-            return ''
+            return ''   # caller sẽ fallback về crawl_date
 
         value, unit = int(match.group(1)), match.group(2)
         delta_map = {
@@ -182,9 +188,20 @@ class TopcvSpider(BaseJobSpider):
         # ==================== 3. DATE POSTED ====================
         # THÊM: Parse date từ basic_info (trang list) 
         date_posted_raw = basic_info.get('date_posted_raw', '')
+        parsed_date = ''
+
         if date_posted_raw:
-            item['date_posted'] = self.parse_relative_date(date_posted_raw)
-            self.logger.debug(f"date_posted from list page: '{date_posted_raw}' → '{item['date_posted']}'")
+            parsed_date = self.parse_relative_date(date_posted_raw)
+            self.logger.debug(f"date_posted: raw='{date_posted_raw}' → '{parsed_date}'")
+
+        # Fallback về crawl_date nếu không parse được
+        item['date_posted'] = parsed_date if parsed_date else self.crawl_date
+        
+        if not parsed_date:
+            self.logger.debug(
+                f"date_posted fallback to crawl_date='{self.crawl_date}' "
+                f"(raw='{date_posted_raw or 'empty'}')"
+            )
 
         # ==================== 4. SALARY & LOCATION ====================
         
@@ -197,28 +214,43 @@ class TopcvSpider(BaseJobSpider):
             item['salary_raw'] = salary_text
 
         # --- Location ---
-        location_text = self._pick_info_value(response, 'Địa điểm') or \
-                        self._find_text_by_label(response, ['Địa điểm', 'Location', 'Nơi làm việc']) or \
-                        basic_info.get('address_list')  # THÊM: fallback từ list page
-        
+        # Ưu tiên: standard layout → brand layout → list page (đã sạch) → _find_text_by_label (cuối cùng)
+        is_brand = '/brand/' in response.url
+        if is_brand:
+            location_text = self._extract_brand_location(response) or \
+                            basic_info.get('address_list')
+        else:
+            location_text = self._pick_info_value(response, 'Địa điểm') or \
+                            basic_info.get('address_list') or \
+                            self._find_text_by_label(response, ['Địa điểm', 'Location', 'Nơi làm việc'])
+
         if location_text:
+            # Truncate sớm trước khi clean để tránh JD bị lẫn vào
+            location_text = location_text[:300]
+
             stop_phrases = [
-                "Thời gian làm việc", "Hạn nộp", "Bạn có hài lòng", 
+                "Thời gian làm việc", "Hạn nộp", "Bạn có hài lòng",
                 "Xem số người", "Cách thức ứng tuyển", "Tuyển dụng bởi",
-                "Kinh nghiệm:", "Mức lương:", "\n"
+                "Kinh nghiệm:", "Mức lương:", "Mô tả công việc", "Yêu cầu", "\n"
             ]
-            
+
             clean_loc = location_text
             for phrase in stop_phrases:
                 idx = clean_loc.lower().find(phrase.lower())
                 if idx != -1:
                     clean_loc = clean_loc[:idx]
 
-            item['location_raw'] = clean_loc.strip(" -:,.")
-            
+            clean_loc = clean_loc.strip(" -:,.")
+            # Giới hạn cuối cùng: location không bao giờ > 200 ký tự
+            if len(clean_loc) > 200:
+                self.logger.warning(f"location_raw quá dài ({len(clean_loc)} chars), truncate: {response.url}")
+                clean_loc = clean_loc[:200]
+
+            item['location_raw'] = clean_loc
+
             location_data = self.field_extractor.parse_location(item['location_raw'])
             extra_data['location_city'] = location_data.get('city')
-            
+
             if len(item['location_raw']) > 10:
                 extra_data['location_address'] = item['location_raw']
 
@@ -394,8 +426,8 @@ class TopcvSpider(BaseJobSpider):
         # ── box-info layout (VPBank, ...): div.box-info > h2.title + div.content-tab
         _box_info = (
             '//div[contains(@class,"box-info")]'
-            '[.//h2[contains(@class,"title") and contains(normalize-space(),"{kw}")]]'
-            '//div[contains(@class,"content-tab")]'
+            '[./h2[contains(@class,"title") and contains(normalize-space(),"{kw}")]]'
+            '/div[contains(@class,"content-tab")]'
         )
 
         for key, keyword in [
@@ -409,6 +441,47 @@ class TopcvSpider(BaseJobSpider):
                     blocks[key] = text.strip()
 
         return blocks
+
+    def _extract_brand_location(self, response):
+        """
+        Extract location from brand layout pages (/brand/ URLs: FPT, VPBank, Sapo, ...).
+
+        Variant A (.basic-information-item): Sapo, FPT, ...
+        Variant B (.box-item + fa-map-marker icon): VPBank, ...
+        Variant C (premium layout): tên thành phố trong header thông tin.
+        """
+        # Variant A – basic-information-item
+        location = response.xpath(
+            '//div[contains(@class,"basic-information-item")]'
+            '[.//*[contains(@class,"basic-information-item__data--label")'
+            '      and (contains(normalize-space(),"Địa điểm")'
+            '           or contains(normalize-space(),"Location"))]]'
+            '//*[contains(@class,"basic-information-item__data--value")]'
+        ).xpath('string()').get()
+        if location and location.strip():
+            return location.strip()[:200]
+
+        # Variant B – box-item với icon bản đồ (VPBank, ...)
+        location = response.xpath(
+            '//div[contains(@class,"box-item")]'
+            '[.//i[contains(@class,"fa-map-marker") or contains(@class,"fa-location")'
+            '      or contains(@class,"fa-map-pin")]]'
+            '/div[not(.//i)]'
+        ).xpath('string()').get()
+        if location and location.strip():
+            return location.strip()[:200]
+
+        # Variant C – premium brand header info
+        location = response.xpath(
+            '//div[contains(@class,"premium-job-info") or contains(@class,"job-info-header")]'
+            '[.//*[contains(normalize-space(),"Địa điểm")'
+            '      or contains(normalize-space(),"Location")]]'
+            '//*[contains(@class,"value") or contains(@class,"content")]'
+        ).xpath('string()').get()
+        if location and location.strip():
+            return location.strip()[:200]
+
+        return None
 
     def _extract_brand_salary(self, response):
         """

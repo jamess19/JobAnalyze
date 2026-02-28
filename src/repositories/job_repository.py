@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from models import Job, Location, Skill, Domain
 from models.associations import job_skills, job_domain
+from utils.skill_extractor import SkillExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 class JobRepository:
     def __init__(self, session_factory):
         self.Session = session_factory
+        self.ALLOWED_SKILLS = SkillExtractor().get_skill_whitelist()
 
     def save_batch(self, items: list[dict]) -> int:
         """Batch upsert jobs + dimensions. Returns number of jobs saved."""
@@ -99,6 +101,9 @@ class JobRepository:
 
         for skill_name in skills_raw:
             if not skill_name:
+                continue
+            if self.ALLOWED_SKILLS and skill_name.lower() not in self.ALLOWED_SKILLS:
+                logger.debug(f"Skipping skill not in whitelist: '{skill_name}'")
                 continue
             stmt = insert(Skill).values(
                 name=skill_name

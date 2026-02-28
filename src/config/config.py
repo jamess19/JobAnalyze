@@ -16,7 +16,7 @@ output_folder = os.getenv("OUTPUT_FOLDER", "src/data")
 OUTPUT_FOLDER = os.path.abspath(os.path.join(base_dir, output_folder)) if not os.path.isabs(output_folder) else output_folder
 REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8000/callback")
 
-PORT = os.getenv("PORT", 8000)
+PORT = int(os.getenv("PORT", 8000))
 
 # LinkedIn credentials (for authenticated scraping)
 LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL", "")
