@@ -5,7 +5,7 @@ ITViec Spider - Scrape job listings from itviec.com
 import re
 import scrapy
 from urllib.parse import urljoin
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, date
 
 # Use absolute imports
 from spiders.spiders.base_spider import BaseJobSpider
@@ -27,9 +27,35 @@ class ItviecSpider(BaseJobSpider):
         'RETRY_TIMES': 3,
     }
 
+    # Smart crawl settings
+    MAX_CONSECUTIVE_DUPS = 15   # stop if this many consecutive duplicate jobs
+    DATE_FOLLOW_DAYS    = 2    # follow detail page only if posted_date >= T - N days
+    DATE_STOP_DAYS      = 3    # stop pagination if posted_date < T - N days
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.base_url = "https://itviec.com"
+
+        # Smart crawl state
+        self._max_date: date | None = None   # T = max(posted_date) from DB
+        self.consecutive_dup_count = 0       # updated by DeduplicationPipeline
+        self.should_stop = False             # set True to stop pagination
+
+    def _init_db(self):
+        """Load T = max(posted_date) from DB."""
+        if self._max_date is not None:
+            return
+        from models.base import get_engine, get_session_factory
+        from repositories.job_repository import JobRepository
+        engine = get_engine(self.settings.get("DATABASE_URL"))
+        session_factory = get_session_factory(engine)
+        repo = JobRepository(session_factory)
+        max_date = repo.get_max_posted_date()
+        if max_date:
+            self._max_date = max_date.date() if hasattr(max_date, 'date') else max_date
+        else:
+            self._max_date = datetime.now().date()
+        self.logger.info(f"Smart crawl: T = {self._max_date} (DATE_FOLLOW >= T-{self.DATE_FOLLOW_DAYS}d, DATE_STOP < T-{self.DATE_STOP_DAYS}d, MAX_DUP={self.MAX_CONSECUTIVE_DUPS})")
     
     def normalize_search_params(self) -> tuple:
         """Normalize keyword and location for URL"""
@@ -80,73 +106,119 @@ class ItviecSpider(BaseJobSpider):
             return today.strftime('%Y-%m-%d')
     
     def start_requests(self):
-        """Generate initial requests for search pages"""
+        """Start from page 1 and auto-paginate until stop condition is met."""
+        self._init_db()
         keyword, location = self.normalize_search_params()
 
         self.logger.info(f"Starting ITViec spider with keyword='{keyword}', location='{location}'")
 
-        for page in range(self.start_page, self.end_page + 1):
-            if location:
-                url = f"{self.base_url}/it-jobs/{keyword}/{location}?page={page}"
-            else:
-                url = f"{self.base_url}/it-jobs/{keyword}?page={page}"
+        if location:
+            url = f"{self.base_url}/it-jobs/{keyword}/{location}?page=1"
+        else:
+            url = f"{self.base_url}/it-jobs/{keyword}?page=1"
 
-            self.logger.info(f"Requesting search page {page}: {url}")
-
-            yield self.make_request(url=url, callback=self.parse, meta={'page': page})
+        self.logger.info(f"Requesting search page 1: {url}")
+        yield self.make_request(url=url, callback=self.parse, meta={'page': 1, 'keyword': keyword, 'location': location})
     
     def parse(self, response):
         """
-        Parse search results page
-        Extract job links and follow to detail pages
+        Parse search results page:
+        - Lọc date: chỉ follow job có posted_date >= T - DATE_FOLLOW_DAYS
+        - Dừng pagination: posted_date < T - DATE_STOP_DAYS (quá cũ)
+        - Dừng pagination: should_stop = True (do DeduplicationPipeline set khi đủ consecutive dups)
+        - Auto-paginate không giới hạn trang
+        Việc check duplicate thực hiện bởi DeduplicationPipeline (LSH + Jaccard)
         """
-        page = response.meta.get('page', 1)
-        self.logger.info(f"Parsing search page {page}: {response.url}")
-        
-        # 1. Container Selector: Matches <div class="job-card ..."> which has the controller
-        job_items = response.css('div[data-controller="search--job-selection"]')
-        
-        if not job_items:
-            self.logger.warning(f"No job items found on page {page}")
+        if self.should_stop:
             return
-        
-        self.logger.info(f"Found {len(job_items)} job items on page {page}")
-        
-        for job_item in job_items:
-            # 2. Title & URL Selector
-            title_elem = job_item.css('h3[data-search--job-selection-target="jobTitle"]')
-            job_url = title_elem.attrib.get('data-url') if title_elem else None
 
-            # 3. Basic Info Selectors
+        page     = response.meta.get('page', 1)
+        keyword  = response.meta.get('keyword')
+        location = response.meta.get('location')
+        self.logger.info(f"Parsing search page {page}: {response.url}")
+
+        cutoff_follow = self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)
+        cutoff_stop   = self._max_date - timedelta(days=self.DATE_STOP_DAYS)
+
+        job_items = response.css('div[data-controller="search--job-selection"]')
+        if not job_items:
+            self.logger.warning(f"No job items found on page {page}, stopping pagination.")
+            return
+
+        self.logger.info(f"Found {len(job_items)} job items on page {page}")
+
+        stop_pagination = False
+
+        for job_item in job_items:
+            # --- Title & URL ---
+            title_elem = job_item.css('h3[data-search--job-selection-target="jobTitle"]')
+            job_url    = title_elem.attrib.get('data-url') if title_elem else None
+            if not job_url:
+                continue
+
+            absolute_url = urljoin(self.base_url, job_url)
+
+            # --- Date filter (best-effort từ list card) ---
+            # ITViec hiển thị "Posted X days ago", "Posted today", v.v. trong text node
+            date_raw = job_item.xpath(
+                './/text()[contains(., "days ago") or contains(., "day ago") '
+                'or contains(., "hours ago") or contains(., "hour ago") '
+                'or contains(., "yesterday") or contains(., "today") '
+                'or contains(., "just now") or contains(., "minutes ago")]'
+            ).get()
+            posted_date = None
+            if date_raw:
+                posted_date_str = self.parse_relative_date(date_raw.strip())
+                posted_date = datetime.strptime(posted_date_str, '%Y-%m-%d').date()
+
+                # Quá cũ → dừng toàn bộ pagination
+                if posted_date < cutoff_stop:
+                    self.logger.info(
+                        f"Job too old ({posted_date} < T-{self.DATE_STOP_DAYS}d={cutoff_stop}), stopping pagination."
+                    )
+                    stop_pagination = True
+                    break
+
+                # Không đủ recent → skip card này, tiếp tục
+                if posted_date < cutoff_follow:
+                    self.logger.debug(f"Skipping (date {posted_date} < cutoff {cutoff_follow}): {absolute_url}")
+                    continue
+
+            # --- Vượt qua date filter → request detail page ---
+            # DeduplicationPipeline sẽ check LSH + Jaccard và cập nhật
+            # spider.consecutive_dup_count / spider.should_stop
             basic_info = {
-                # Title text is inside the H3
-                'title': title_elem.css('::text').get().strip() if title_elem else None,
-                
-                # Company: Matches <a class="text-rich-grey" ...> inside the card
-                'company': job_item.css('a.text-rich-grey::text').get(),
-                
-                # Location: Matches <div class="text-rich-grey ..." title="Ho Chi Minh">
-                # We use div[title] to distinguish from logo/links which are <a> tags
+                'title':    title_elem.css('::text').get('').strip(),
+                'company':  job_item.css('a.text-rich-grey::text').get(),
                 'location': job_item.css('div.text-rich-grey[title]::attr(title)').get(),
             }
+            if posted_date:
+                basic_info['posted_date'] = posted_date.strftime('%Y-%m-%d')
 
-            # 4. Skills Selector
             skill_tags = job_item.css('div[data-controller="responsive-tag-list"] a::text').getall()
             if skill_tags:
-                basic_info['skills'] = [s.strip() for s in skill_tags if s and s.strip()]
+                basic_info['skills'] = [s.strip() for s in skill_tags if s.strip()]
 
-            if job_url:
-                # The data-url in HTML is absolute (e.g., "https://itviec.com/it-jobs/..."), 
-                # but urljoin handles it safely even if it's absolute.
-                absolute_url = urljoin(self.base_url, job_url)
-                
-                self.logger.debug(f"Following job URL: {absolute_url}")
+            self.logger.debug(f"Following job URL: {absolute_url}")
+            yield self.make_request(
+                url=absolute_url,
+                callback=self.parse_job_detail,
+                meta={'basic_info': basic_info},
+            )
 
-                yield self.make_request(
-                    url=absolute_url,
-                    callback=self.parse_job_detail,
-                    meta={'basic_info': basic_info},
-                )
+        # --- Auto-paginate ---
+        if not stop_pagination and not self.should_stop:
+            next_page = page + 1
+            if location:
+                next_url = f"{self.base_url}/it-jobs/{keyword}/{location}?page={next_page}"
+            else:
+                next_url = f"{self.base_url}/it-jobs/{keyword}?page={next_page}"
+            self.logger.info(f"Requesting search page {next_page}: {next_url}")
+            yield self.make_request(
+                url=next_url,
+                callback=self.parse,
+                meta={'page': next_page, 'keyword': keyword, 'location': location},
+            )
     
     def parse_job_detail(self, response):
         """
@@ -175,6 +247,9 @@ class ItviecSpider(BaseJobSpider):
         date_posted_raw = response.xpath('//div[contains(@class, "preview-header-item")]//svg[use[contains(@href, "clock")]]/following-sibling::span/text()').get()
         if date_posted_raw:
             item['date_posted'] = self.parse_relative_date(date_posted_raw)
+        elif basic_info.get('posted_date'):
+            # Fallback to date extracted from list page
+            item['date_posted'] = basic_info['posted_date']
         
         # Salary: in the div.salary in the header
         salary_elem = response.css('div.preview-job-header .salary::text').get()
@@ -184,13 +259,21 @@ class ItviecSpider(BaseJobSpider):
         
         item['salary_raw'] = salary_elem.strip() if salary_elem else "Negotiable"
 
-        # Location: in the section overview, class text-rich-grey
-        # HTML: <section class="preview-job-overview"> ... <span class="text-rich-grey">Address</span>
-        location_elem = response.css('section.preview-job-overview .text-rich-grey::text').get()
-        if location_elem:
-            location_text = location_elem.strip()
-            location_data = self.field_extractor.parse_location(location_text)
-            extra_data['location_city'] = location_data.get('city')
+        # Location: basic_info['location'] from list page is most reliable (e.g. "Ho Chi Minh")
+        # Detail page has full address in <span class="normal-text text-rich-grey">
+        location_city = basic_info.get('location')
+
+        location_address = (
+            response.css('span.normal-text.text-rich-grey::text').get() or
+            response.css('a[href*="google.com/maps"]::text').get() or
+            location_city
+        )
+
+        location_text = location_address or location_city
+        if location_text:
+            location_text = location_text.strip()
+            item['location_raw'] = location_text
+            extra_data['location_city'] = location_city.strip() if location_city else location_text
             extra_data['location_address'] = location_text
 
         # Skills: find the text "Skills:" then get the a tags in the next div

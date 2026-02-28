@@ -5,6 +5,7 @@ from sqlalchemy import text
 from models import Job, Location, Skill, Domain
 from models.associations import job_skills, job_domain
 from utils.skill_extractor import SkillExtractor
+from utils.normalizer import DataNormalizer
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,7 @@ class JobRepository:
     def __init__(self, session_factory):
         self.Session = session_factory
         self.ALLOWED_SKILLS = SkillExtractor().get_skill_whitelist()
+        self.normalizer = DataNormalizer()
 
     def save_batch(self, items: list[dict]) -> int:
         """Batch upsert jobs + dimensions. Returns number of jobs saved."""
@@ -47,16 +49,19 @@ class JobRepository:
         return saved
 
     def _upsert_location(self, session: Session, item: dict) -> Location | None:
-        city = item.get("location_raw") or item.get("location_city")
-        if not city:
+        extra_data = item.get("extra_data") or {}
+        # extra_data['location_city'] is already parsed by the spider's field_extractor
+        raw = extra_data.get("location_city") or item.get("location_raw")
+        if not raw:
             return None
 
-        stmt = insert(Location).values(
-            city_name=city, country="Vietnam", raw_name=item.get("location_raw")
-        ).on_conflict_do_nothing(index_elements=["city_name"])
-        session.execute(stmt)
+        city_slug, _ = self.normalizer.normalize_location_to_province(raw)
+        if not city_slug:
+            logger.debug(f"Location not mapped to province: '{raw}'")
+            return None
 
-        return session.query(Location).filter_by(city_name=city).first()
+        # Only lookup — locations are pre-seeded (63 provinces)
+        return session.query(Location).filter_by(city_name=city_slug).first()
 
     def _upsert_job(self, session: Session, item: dict, location: Location | None, signature: list[int] | None = None) -> Job:
         """
@@ -68,17 +73,41 @@ class JobRepository:
         :param signature: MinHash signature (list of 128 integers)
         :return: Job object
         """
+        source = item.get("source", "")
+        skills_tags = item.get("skills_tags") or []
+        if isinstance(skills_tags, str):
+            skills_tags = [s.strip() for s in skills_tags.split(",")]
+
+        # --- Salary ---
+        salary_min = item.get("salary_min")
+        salary_max = item.get("salary_max")
+        salary_currency = item.get("salary_currency", "VND")
+        if source == "topcv":
+            salary_raw = item.get("salary_raw") or ""
+            parsed_salary = DataNormalizer.parse_salary_topcv(salary_raw)
+            if parsed_salary:
+                salary_min      = parsed_salary.get("salary_min")
+                salary_max      = parsed_salary.get("salary_max")
+                salary_currency = parsed_salary.get("salary_currency", "VND")
+
+        # --- Experience ---
+        experience = item.get("experience_required")
+        if not experience and source == "topcv":
+            experience = DataNormalizer.extract_experience_from_tags(skills_tags)
+        if not experience:
+            experience = DataNormalizer.extract_experience_from_text(item.get("requirements") or "")
+
         values = {
             "id": item.get("job_id"),
             "posted_date": item.get("date_posted") or item.get("crawl_date"),
-            "source": item.get("source"),
+            "source": source,
             "title": item.get("title"),
             "company_name": item.get("company_name"),
             "url": item.get("job_url"),
-            "salary_min": item.get("salary_min"),
-            "salary_max": item.get("salary_max"),
-            "salary_currency": item.get("salary_currency", "VND"),
-            "experience": item.get("experience_required"),
+            "salary_min": salary_min,
+            "salary_max": salary_max,
+            "salary_currency": salary_currency,
+            "experience": experience,
             "location_id": location.id if location else None,
         }
         
@@ -360,3 +389,21 @@ class JobRepository:
             logger.error(f"Error deleting old LSH buckets: {e}")
             session.rollback()
             return 0
+
+    def get_max_posted_date(self):
+        """Return max(posted_date) from jobs table, or None if table is empty."""
+        with self.Session() as session:
+            result = session.execute(text("SELECT MAX(posted_date) FROM jobs")).scalar()
+            return result  # datetime.date or None
+
+    def has_lsh_entry(self, session: Session, job_id: str) -> bool:
+        """
+        Check whether a job has been previously indexed (has LSH buckets stored).
+        Uses lsh_buckets table — LSH infrastructure — not jobs.id directly.
+        If a job_id exists in lsh_buckets, it was fully crawled and indexed before.
+        """
+        result = session.execute(
+            text("SELECT 1 FROM lsh_buckets WHERE job_id = :job_id LIMIT 1"),
+            {"job_id": job_id}
+        ).first()
+        return result is not None

@@ -93,12 +93,28 @@ class DeduplicationPipeline:
                 
                 if is_duplicate:
                     self.stats["near_dup"] += 1
+                    # Update consecutive dup counter on spider
+                    if hasattr(spider, 'consecutive_dup_count'):
+                        spider.consecutive_dup_count += 1
+                        max_dups = getattr(spider, 'MAX_CONSECUTIVE_DUPS', 15)
+                        spider.logger.debug(
+                            f"Consecutive duplicates: {spider.consecutive_dup_count}/{max_dups}"
+                        )
+                        if spider.consecutive_dup_count >= max_dups:
+                            spider.logger.info(
+                                f"{max_dups} consecutive duplicates reached, stopping pagination."
+                            )
+                            spider.should_stop = True
                     raise DropItem(
                         f"Near-duplicate detected: {url} is {similarity_score:.2%} similar to job {duplicate_job_id} (threshold={self.JACCARD_THRESHOLD})"
                     )
         
         # ==================== UNIQUE ITEM ====================
         self.stats["unique"] += 1
+        
+        # Reset consecutive dup counter on spider
+        if hasattr(spider, 'consecutive_dup_count'):
+            spider.consecutive_dup_count = 0
         
         # Mark URL as seen (Layer 1)
         self._mark_as_seen(url, text)

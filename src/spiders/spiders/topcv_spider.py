@@ -4,7 +4,7 @@ TopCV Spider - Scrape job listings from topcv.vn
 
 import scrapy
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from urllib.parse import urljoin
 from spiders.spiders.base_spider import BaseJobSpider
 from spiders.items import JobItem
@@ -18,6 +18,11 @@ class TopcvSpider(BaseJobSpider):
 
     # Enable Playwright for this spider
     use_playwright = True
+
+    # Smart crawl settings
+    MAX_CONSECUTIVE_DUPS = 15   # stop if this many consecutive duplicate jobs
+    DATE_FOLLOW_DAYS    = 2    # follow detail page only if posted_date >= T - N days
+    DATE_STOP_DAYS      = 3    # stop pagination if posted_date < T - N days
 
     custom_settings = {
         'DOWNLOAD_DELAY': 4,  # Increase delay to avoid 429
@@ -35,6 +40,27 @@ class TopcvSpider(BaseJobSpider):
         super().__init__(*args, **kwargs)
         self.base_url = "https://www.topcv.vn"
         self.seen_jobs = set()
+
+        # Smart crawl state
+        self._max_date: date | None = None   # T = max(posted_date) from DB
+        self.consecutive_dup_count = 0       # updated by DeduplicationPipeline
+        self.should_stop = False             # set True to stop pagination
+
+    def _init_db(self):
+        """Load T = max(posted_date) from DB."""
+        if self._max_date is not None:
+            return
+        from models.base import get_engine, get_session_factory
+        from repositories.job_repository import JobRepository
+        engine = get_engine(self.settings.get("DATABASE_URL"))
+        session_factory = get_session_factory(engine)
+        repo = JobRepository(session_factory)
+        max_date = repo.get_max_posted_date()
+        if max_date:
+            self._max_date = max_date.date() if hasattr(max_date, 'date') else max_date
+        else:
+            self._max_date = datetime.now().date()
+        self.logger.info(f"Smart crawl: T = {self._max_date} (DATE_FOLLOW >= T-{self.DATE_FOLLOW_DAYS}d, DATE_STOP < T-{self.DATE_STOP_DAYS}d, MAX_DUP={self.MAX_CONSECUTIVE_DUPS})")
     
     def slugify(self, text: str) -> str:
         """Convert text to slug for URL"""
@@ -47,56 +73,95 @@ class TopcvSpider(BaseJobSpider):
         return text.lower()
     
     def start_requests(self):
-        """Generate initial requests for search pages"""
+        """Start from page 1 and auto-paginate until stop condition is met."""
+        self._init_db()
         keyword_slug = self.slugify(self.keyword)
 
         self.logger.info(f"Starting TopCV spider with keyword='{self.keyword}' (slug: {keyword_slug})")
 
-        for page in range(self.start_page, self.end_page + 1):
-            url = f"{self.base_url}/tim-viec-lam-{keyword_slug}?sort=new&type_keyword=1&page={page}&sba=1"
-
-            self.logger.info(f"Requesting search page {page}: {url}")
-
-            yield self.make_request(
-                url=url,
-                callback=self.parse,
-                meta={'page': page},
-                page_timeout=60000,
-            )
+        url = f"{self.base_url}/tim-viec-lam-{keyword_slug}?sort=new&type_keyword=1&page=1&sba=1"
+        self.logger.info(f"Requesting search page 1: {url}")
+        yield self.make_request(
+            url=url,
+            callback=self.parse,
+            meta={'page': 1, 'keyword_slug': keyword_slug},
+            page_timeout=60000,
+        )
     
     def parse(self, response):
         """
-        Parse search results page
-        Extract job links and basic info
+        Parse search results page.
+        - Date filter: chỉ follow job có posted_date >= T - DATE_FOLLOW_DAYS
+        - Dừng pagination: posted_date < T - DATE_STOP_DAYS (quá cũ)
+        - Dừng pagination: should_stop = True (do DeduplicationPipeline set khi đủ consecutive dups)
+        - Auto-paginate không giới hạn trang
         """
-        page = response.meta.get('page', 1)
+        if self.should_stop:
+            return
+
+        page         = response.meta.get('page', 1)
+        keyword_slug = response.meta.get('keyword_slug', self.slugify(self.keyword))
         self.logger.info(f"Parsing search page {page}: {response.url}")
-        
+
+        cutoff_follow = self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)
+        cutoff_stop   = self._max_date - timedelta(days=self.DATE_STOP_DAYS)
+
         # Extract job items from search page
         job_items = response.css('div.job-item-search-result')
-        
+
         if not job_items:
-            self.logger.warning(f"No job items found on page {page}")
+            self.logger.warning(f"No job items found on page {page}, stopping pagination.")
             return
-        
+
         self.logger.info(f"Found {len(job_items)} job items on page {page}")
-        
+
+        stop_pagination = False
+
         for job_item in job_items:
             # Extract job URL
             title_link = job_item.css('h3.title a::attr(href)').get()
-            
             if not title_link:
                 continue
-            
+
             job_url = urljoin(self.base_url, title_link)
-            
-            # Check for duplicates
+
+            # URL-level dedup (within same crawl run)
             if job_url in self.seen_jobs:
                 self.logger.debug(f"Skipping duplicate job: {job_url}")
                 continue
-            
             self.seen_jobs.add(job_url)
-            
+
+            # --- Date filter ---
+            date_posted_raw = job_item.xpath(
+                'normalize-space(.//label[contains(@class,"label-update")]/text()[normalize-space()])'
+            ).get() or ''
+
+            # Promoted/advertised jobs (bg-yellow) don't have a reliable posted_date
+            # and may appear out of chronological order — skip date filter, let LSH decide.
+            is_promoted = 'bg-yellow' in (job_item.attrib.get('class') or '')
+
+            posted_date = None
+            if date_posted_raw and not is_promoted:
+                parsed_str = self.parse_relative_date(date_posted_raw)
+                if parsed_str:
+                    posted_date = datetime.strptime(parsed_str, '%Y-%m-%d').date()
+            elif is_promoted:
+                self.logger.debug(f"Promoted job — skipping date filter: {job_url}")
+
+            if posted_date:
+                # Quá cũ → dừng toàn bộ pagination
+                if posted_date < cutoff_stop:
+                    self.logger.info(
+                        f"Job too old ({posted_date} < T-{self.DATE_STOP_DAYS}d={cutoff_stop}), stopping pagination."
+                    )
+                    stop_pagination = True
+                    break
+
+                # Không đủ recent → skip card này, tiếp tục
+                if posted_date < cutoff_follow:
+                    self.logger.debug(f"Skipping (date {posted_date} < cutoff {cutoff_follow}): {job_url}")
+                    continue
+
             # Extract basic info from search page
             basic_info = {
                 'title': self.safe_extract_text(job_item, 'h3.title a::text'),
@@ -105,11 +170,9 @@ class TopcvSpider(BaseJobSpider):
                 'salary_list': self.safe_extract_text(job_item, 'label.title-salary::text'),
                 'address_list': self.safe_extract_text(job_item, 'label.address .city-text::text'),
                 'exp_list': self.safe_extract_text(job_item, 'label.exp span::text'),
-                'date_posted_raw': job_item.xpath(
-                    'normalize-space(.//label[contains(@class,"label-update")]/text()[normalize-space()])'
-                ).get() or '',
+                'date_posted_raw': date_posted_raw,
             }
-            
+
             self.logger.debug(f"Following job URL: {job_url}")
 
             # Brand pages need extra wait for JS-rendered content
@@ -119,7 +182,19 @@ class TopcvSpider(BaseJobSpider):
                 callback=self.parse_job_detail,
                 meta={'basic_info': basic_info},
                 wait_for_selector='.premium-job-description__box--content, .box-info .content-tab' if is_brand else None,
-                page_timeout=60000,  # 60s cho tất cả pages, TopcV load chậm
+                page_timeout=60000,
+            )
+
+        # --- Auto-paginate ---
+        if not stop_pagination and not self.should_stop:
+            next_page = page + 1
+            next_url = f"{self.base_url}/tim-viec-lam-{keyword_slug}?sort=new&type_keyword=1&page={next_page}&sba=1"
+            self.logger.info(f"Requesting search page {next_page}: {next_url}")
+            yield self.make_request(
+                url=next_url,
+                callback=self.parse,
+                meta={'page': next_page, 'keyword_slug': keyword_slug},
+                page_timeout=60000,
             )
     
     def parse_relative_date(self, text: str) -> str:
