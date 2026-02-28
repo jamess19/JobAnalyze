@@ -158,27 +158,28 @@ This starts:
 ### Run locally
 
 ```bash
-# Run the full pipeline
+# Run all spiders (full pipeline)
 python src/main.py
 
-# Or use the CLI entry point
-scrape
+# Run a specific spider only
+python src/main.py --spider itviec
+python src/main.py --spider topcv
+python src/main.py --spider linkedin
 ```
 
 The pipeline executes in order:
 1. Run spiders (ITViec, TopCV, LinkedIn) with Playwright
 2. Process items: Validation → Cleaning → Deduplication → Database → Export
-3. Export CSV/JSON/Excel to `src/data/`
+3. Export CSV/JSON/Excel to `data/`
 4. Upload CSV to Google Drive
 
-### Run individual spiders
+### Run individual spiders (Scrapy CLI)
 
 ```bash
-scrapy crawl itviec -a keyword="software engineer" -a location="ho-chi-minh"
-
-scrapy crawl topcv -a keyword="Data Engineer"
-
-scrapy crawl linkedin -a keyword="data analyst" -a location="Vietnam"
+cd src
+scrapy crawl itviec_spider -a keyword="software engineer" -a location="ho-chi-minh"
+scrapy crawl topcv_spider  -a keyword="Data Engineer"
+scrapy crawl linkedin_spider -a keyword="data analyst" -a location="Vietnam"
 ```
 
 ## Spider Configuration
