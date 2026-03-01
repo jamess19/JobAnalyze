@@ -93,6 +93,7 @@ DOWNLOADER_MIDDLEWARES = {
 ITEM_PIPELINES = {
    "pipelines.validation.ValidationPipeline": 100,
    "pipelines.cleaning.CleaningPipeline": 200,
+   "pipelines.skill_extraction.SkillExtractionPipeline": 250,  # NLP skill/domain extraction
    "pipelines.deduplication.DeduplicationPipeline": 300,
    "pipelines.database.DatabasePipeline": 400,
    "pipelines.export.ExportPipeline": 500,

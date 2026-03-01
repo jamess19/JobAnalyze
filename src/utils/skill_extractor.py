@@ -146,33 +146,77 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": "CI/CD"},
             
             # ==================== BUSINESS DOMAINS ====================
-            {"label": "DOMAIN", "pattern": "Fintech"},
-            {"label": "DOMAIN", "pattern": "FinTech"},
+            # --- Fintech / Tài chính ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "fintech"}]},
             {"label": "DOMAIN", "pattern": [{"LOWER": "financial"}, {"LOWER": "technology"}]},
-            {"label": "DOMAIN", "pattern": "E-commerce"},
-            {"label": "DOMAIN", "pattern": "Ecommerce"},
-            {"label": "DOMAIN", "pattern": [{"LOWER": "e"}, {"LOWER": "-"}, {"LOWER": "commerce"}]},
-            {"label": "DOMAIN", "pattern": "Healthcare"},
-            {"label": "DOMAIN", "pattern": "Health Tech"},
-            {"label": "DOMAIN", "pattern": "EdTech"},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "tài"}, {"LOWER": "chính"}]},
+
+            # --- Banking / Ngân hàng ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "banking"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "ngân"}, {"LOWER": "hàng"}]},
+
+            # --- E-commerce / Thương mại điện tử ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "e-commerce"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "ecommerce"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "e"}, {"TEXT": "-"}, {"LOWER": "commerce"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "thương"}, {"LOWER": "mại"}, {"LOWER": "điện"}, {"LOWER": "tử"}]},
+
+            # --- Healthcare / Y tế ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "healthcare"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "health"}, {"LOWER": "tech"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "y"}, {"LOWER": "tế"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "bệnh"}, {"LOWER": "viện"}]},
+
+            # --- EdTech / Giáo dục ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "edtech"}]},
             {"label": "DOMAIN", "pattern": [{"LOWER": "education"}, {"LOWER": "technology"}]},
-            {"label": "DOMAIN", "pattern": "Blockchain"},
-            {"label": "DOMAIN", "pattern": "Cryptocurrency"},
-            {"label": "DOMAIN", "pattern": "Web3"},
-            {"label": "DOMAIN", "pattern": "Logistics"},
-            {"label": "DOMAIN", "pattern": "Supply Chain"},
-            {"label": "DOMAIN", "pattern": "Real Estate"},
-            {"label": "DOMAIN", "pattern": "PropTech"},
-            {"label": "DOMAIN", "pattern": "Banking"},
-            {"label": "DOMAIN", "pattern": "Insurance"},
-            {"label": "DOMAIN", "pattern": "InsurTech"},
-            {"label": "DOMAIN", "pattern": "Retail"},
-            {"label": "DOMAIN", "pattern": "Gaming"},
-            {"label": "DOMAIN", "pattern": "Entertainment"},
-            {"label": "DOMAIN", "pattern": "Media"},
-            {"label": "DOMAIN", "pattern": "Telecommunications"},
-            {"label": "DOMAIN", "pattern": "Travel"},
-            {"label": "DOMAIN", "pattern": "Hospitality"},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "giáo"}, {"LOWER": "dục"}]},
+
+            # --- Logistics / Chuỗi cung ứng ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "logistics"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "supply"}, {"LOWER": "chain"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "chuỗi"}, {"LOWER": "cung"}, {"LOWER": "ứng"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "vận"}, {"LOWER": "chuyển"}]},
+
+            # --- Real Estate / Bất động sản ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "real"}, {"LOWER": "estate"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "proptech"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "bất"}, {"LOWER": "động"}, {"LOWER": "sản"}]},
+
+            # --- Insurance / Bảo hiểm ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "insurance"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "insurtech"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "bảo"}, {"LOWER": "hiểm"}]},
+
+            # --- Retail / Bán lẻ ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "retail"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "bán"}, {"LOWER": "lẻ"}]},
+
+            # --- Manufacturing / Sản xuất ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "manufacturing"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "sản"}, {"LOWER": "xuất"}]},
+
+            # --- Telecommunications / Viễn thông ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "telecommunications"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "telecom"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "viễn"}, {"LOWER": "thông"}]},
+
+            # --- Gaming / Game ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "gaming"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "game"}]},
+
+            # --- Blockchain / Web3 ---
+            {"label": "DOMAIN", "pattern": [{"LOWER": "blockchain"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "cryptocurrency"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "web3"}]},
+
+            # --- Travel / Du lịch (chỉ dùng tiếng Việt - "travel" đơn hay false positive)
+            {"label": "DOMAIN", "pattern": [{"LOWER": "du"}, {"LOWER": "lịch"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "khách"}, {"LOWER": "sạn"}]},
+            {"label": "DOMAIN", "pattern": [{"LOWER": "hospitality"}]},
+
+            # --- Entertainment (không dùng "media" đơn - hay false positive với "social media")
+            {"label": "DOMAIN", "pattern": [{"LOWER": "entertainment"}]},
         ]
         
         ruler.add_patterns(patterns)
@@ -303,26 +347,64 @@ class SkillExtractor:
         :param domain_text: Raw domain text
         :return: Normalized domain name
         """
-        # Mapping for common variations
+        # Mapping for common variations (English + Vietnamese)
         normalization_map = {
+            # Fintech / Tài chính
             'fintech': 'Fintech',
             'financial technology': 'Fintech',
+            'tài chính': 'Fintech',
+            # Banking / Ngân hàng
+            'banking': 'Banking',
+            'ngân hàng': 'Banking',
+            # E-commerce / Thương mại điện tử
             'e-commerce': 'E-commerce',
             'ecommerce': 'E-commerce',
+            'thương mại điện tử': 'E-commerce',
+            # Healthcare / Y tế
             'healthcare': 'Healthcare',
             'health tech': 'Healthcare',
+            'y tế': 'Healthcare',
+            'bệnh viện': 'Healthcare',
+            # EdTech / Giáo dục
             'edtech': 'EdTech',
             'education technology': 'EdTech',
+            'giáo dục': 'EdTech',
+            # Logistics / Chuỗi cung ứng
+            'logistics': 'Logistics',
+            'supply chain': 'Logistics',
+            'chuỗi cung ứng': 'Logistics',
+            'vận chuyển': 'Logistics',
+            # Real Estate / Bất động sản
+            'real estate': 'Real Estate',
+            'proptech': 'Real Estate',
+            'bất động sản': 'Real Estate',
+            # Insurance / Bảo hiểm
+            'insurance': 'Insurance',
+            'insurtech': 'Insurance',
+            'bảo hiểm': 'Insurance',
+            # Retail / Bán lẻ
+            'retail': 'Retail',
+            'bán lẻ': 'Retail',
+            # Manufacturing / Sản xuất
+            'manufacturing': 'Manufacturing',
+            'sản xuất': 'Manufacturing',
+            # Telecommunications / Viễn thông
+            'telecommunications': 'Telecommunications',
+            'telecom': 'Telecommunications',
+            'viễn thông': 'Telecommunications',
+            # Gaming / Game
+            'gaming': 'Gaming',
+            'game': 'Gaming',
+            # Blockchain / Web3
             'blockchain': 'Blockchain',
             'web3': 'Blockchain',
             'cryptocurrency': 'Blockchain',
-            'logistics': 'Logistics',
-            'supply chain': 'Logistics',
-            'real estate': 'Real Estate',
-            'proptech': 'Real Estate',
-            'banking': 'Banking',
-            'insurance': 'Insurance',
-            'insurtech': 'Insurance',
+            # Travel / Du lịch
+            'du lịch': 'Travel',
+            'khách sạn': 'Hospitality',
+            'hospitality': 'Hospitality',
+            # Entertainment / Media
+            'entertainment': 'Entertainment',
         }
         
         domain_lower = domain_text.lower().strip()

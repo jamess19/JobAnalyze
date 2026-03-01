@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from spiders.spiders.itviec_spider import ItviecSpider
 from spiders.spiders.topcv_spider import TopcvSpider
+from spiders.spiders.linkedin_spider import LinkedinSpider
 
 
 def run_spider(spider_name, keyword, location, start_page, end_page, start_url=None):
@@ -44,6 +45,7 @@ def run_spider(spider_name, keyword, location, start_page, end_page, start_url=N
     spiders = {
         'itviec': ItviecSpider,
         'topcv': TopcvSpider,
+        'linkedin': LinkedinSpider,
     }
     
     # Determine which spiders to run
@@ -121,8 +123,8 @@ def main():
     
     parser.add_argument(
         'spider',
-        choices=['itviec', 'topcv', 'all'],
-        help='Spider to run (itviec, topcv, or all)'
+        choices=['itviec', 'topcv', 'linkedin', 'all'],
+        help='Spider to run (itviec, topcv, linkedin, or all)'
     )
     
     parser.add_argument(
