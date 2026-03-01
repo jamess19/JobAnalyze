@@ -103,9 +103,13 @@ class DeduplicationPipeline:
                         )
                         if spider.consecutive_dup_count >= max_dups:
                             spider.logger.info(
-                                f"{max_dups} consecutive duplicates reached, closing spider immediately."
+                                f"{max_dups} consecutive duplicates reached for current keyword."
                             )
-                            spider.crawler.engine.close_spider(spider, 'consecutive_duplicates_limit_reached')
+                            if getattr(spider, 'per_keyword_stop', False):
+                                # Per-keyword stop: only break the current keyword's scroll loop
+                                spider.should_stop = True
+                            else:
+                                spider.crawler.engine.close_spider(spider, 'consecutive_duplicates_limit_reached')
                     raise DropItem(
                         f"Near-duplicate detected: {url} is {similarity_score:.2%} similar to job {duplicate_job_id} (threshold={self.JACCARD_THRESHOLD})"
                     )

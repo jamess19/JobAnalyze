@@ -31,23 +31,24 @@ class TopcvSpider(BaseJobSpider):
     DATE_STOP_DAYS      = 3    # stop pagination if posted_date < T - N days
 
     custom_settings = {
-        'DOWNLOAD_DELAY': 6,
+        'DOWNLOAD_DELAY': 10,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
-        'CONCURRENT_REQUESTS': 1,              
-        'AUTOTHROTTLE_ENABLED': True,          
-        'AUTOTHROTTLE_START_DELAY': 10,
-        'AUTOTHROTTLE_MAX_DELAY': 60,
+        'CONCURRENT_REQUESTS': 1,
+        'AUTOTHROTTLE_ENABLED': True,
+        'AUTOTHROTTLE_START_DELAY': 15,
+        'AUTOTHROTTLE_MAX_DELAY': 90,
         'AUTOTHROTTLE_TARGET_CONCURRENCY': 0.5,  # more conservative
-        'RETRY_TIMES': 2,          # let RateLimitBackoffMiddleware handle 429
-        'RETRY_HTTP_CODES': [500, 502, 503, 504],  # exclude 429 from default retry
+        'RETRY_TIMES': 3,
+        'RETRY_HTTP_CODES': [500, 502, 503, 504],  # 429 handled by RateLimitBackoffMiddleware
     }
 
-    def __init__(self, start_url: str = None, *args, **kwargs):
+    def __init__(self, start_url: str = None, start_urls: list = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.base_url = "https://www.topcv.vn"
         self.seen_jobs = set()
         self.start_url = start_url  # Direct URL to crawl (overrides keyword slug)
+        self._start_urls = start_urls or ([start_url] if start_url else [])  # Sequential URL list
 
         # Unique Playwright browser context per run → fresh cookies/session each time
         self._playwright_ctx = f"topcv_{uuid.uuid4().hex[:10]}"
@@ -60,7 +61,7 @@ class TopcvSpider(BaseJobSpider):
         self.vip_skipped_count = 0           # VIP/promoted jobs skipped due to old date
 
     def _init_db(self):
-        """Load T = max(posted_date) from DB."""
+        """Load T = max(posted_date) từ DB, lọc theo source của spider này."""
         if self._max_date is not None:
             return
         from models.base import get_engine, get_session_factory
@@ -68,12 +69,14 @@ class TopcvSpider(BaseJobSpider):
         engine = get_engine(self.settings.get("DATABASE_URL"))
         session_factory = get_session_factory(engine)
         repo = JobRepository(session_factory)
-        max_date = repo.get_max_posted_date()
+        source = self.name.replace("_spider", "")  # 'topcv'
+        max_date = repo.get_max_posted_date(source=source)
         if max_date:
             self._max_date = max_date.date() if hasattr(max_date, 'date') else max_date
+            self.logger.info(f"Smart crawl [{source}]: T = {self._max_date} (DATE_FOLLOW >= T-{self.DATE_FOLLOW_DAYS}d, DATE_STOP < T-{self.DATE_STOP_DAYS}d, MAX_DUP={self.MAX_CONSECUTIVE_DUPS})")
         else:
-            self._max_date = datetime.now().date()
-        self.logger.info(f"Smart crawl: T = {self._max_date} (DATE_FOLLOW >= T-{self.DATE_FOLLOW_DAYS}d, DATE_STOP < T-{self.DATE_STOP_DAYS}d, MAX_DUP={self.MAX_CONSECUTIVE_DUPS})")
+            self._max_date = None  # Chưa có job từ source này → crawl toàn bộ
+            self.logger.info(f"Smart crawl [{source}]: No existing data → full crawl mode (no date filter)")
     
     @staticmethod
     def _paginate_url(base_url: str, page: int) -> str:
@@ -95,26 +98,41 @@ class TopcvSpider(BaseJobSpider):
         return text.lower()
     
     def start_requests(self):
-        """Start from page 1 and auto-paginate until stop condition is met."""
+        """Start from page 1 and auto-paginate until stop condition is met.
+        If multiple URLs are provided, they are processed sequentially:
+        each URL is queued with priority so URL N+1 only starts after URL N finishes.
+        """
         self._init_db()
 
-        if self.start_url:
-            # Strip any existing page= so _paginate_url is the sole authority
+        urls_to_crawl = []
+        if self._start_urls:
+            for url in self._start_urls:
+                parsed = urlparse(url)
+                params = {k: v[0] for k, v in parse_qs(parsed.query, keep_blank_values=True).items() if k != 'page'}
+                base_search_url = urlunparse(parsed._replace(query=urlencode(params)))
+                urls_to_crawl.append(base_search_url)
+        elif self.start_url:
             parsed = urlparse(self.start_url)
             params = {k: v[0] for k, v in parse_qs(parsed.query, keep_blank_values=True).items() if k != 'page'}
             base_search_url = urlunparse(parsed._replace(query=urlencode(params)))
-            self.logger.info(f"Starting TopCV spider with URL: {base_search_url}")
+            urls_to_crawl.append(base_search_url)
         else:
             keyword_slug = self.slugify(self.keyword)
             self.logger.info(f"Starting TopCV spider with keyword='{self.keyword}' (slug: {keyword_slug})")
             base_search_url = f"{self.base_url}/tim-viec-lam-{keyword_slug}?sort=new&type_keyword=1&sba=1"
+            urls_to_crawl.append(base_search_url)
 
-        first_url = self._paginate_url(base_search_url, 1)
+        self._url_queue = urls_to_crawl[1:]  # remaining URLs to crawl after the first
+        first_base = urls_to_crawl[0]
+        self.logger.info(f"Starting TopCV spider with {len(urls_to_crawl)} URL(s) (sequential mode)")
+        self.logger.info(f"[URL 1/{len(urls_to_crawl)}] {first_base}")
+
+        first_url = self._paginate_url(first_base, 1)
         self.logger.info(f"Requesting search page 1: {first_url}")
         yield self.make_request(
             url=first_url,
             callback=self.parse,
-            meta={'page': 1, 'base_search_url': base_search_url, 'playwright_context': self._playwright_ctx},
+            meta={'page': 1, 'base_search_url': first_base, 'playwright_context': self._playwright_ctx},
             page_timeout=60000,
         )
     
@@ -128,20 +146,38 @@ class TopcvSpider(BaseJobSpider):
         - Auto-paginate không giới hạn trang.
         """
         if self.should_stop:
+            yield from self._start_next_url()
             return
 
         page            = response.meta.get('page', 1)
         base_search_url = response.meta.get('base_search_url', '')
         self.logger.info(f"Parsing search page {page}: {response.url}")
 
-        cutoff_follow = self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)
-        cutoff_stop   = self._max_date - timedelta(days=self.DATE_STOP_DAYS)
+        # Detect redirect to earlier page (TopCV 302s page>max → last valid page)
+        actual_page = page
+        actual_params = parse_qs(urlparse(response.url).query)
+        if 'page' in actual_params:
+            try:
+                actual_page = int(actual_params['page'][0])
+            except (ValueError, IndexError):
+                pass
+        if actual_page < page:
+            self.logger.info(
+                f"Redirected from page {page} to page {actual_page} — reached last page, stopping pagination."
+            )
+            yield from self._start_next_url()
+            return
+
+        # Nếu _max_date là None (chưa có data source này) → crawl toàn bộ, không lọc date
+        cutoff_follow = (self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)) if self._max_date else None
+        cutoff_stop   = (self._max_date - timedelta(days=self.DATE_STOP_DAYS))   if self._max_date else None
 
         # Extract job items from search page
         job_items = response.css('div.job-item-search-result')
 
         if not job_items:
             self.logger.warning(f"No job items found on page {page}, stopping pagination.")
+            yield from self._start_next_url()
             return
 
         self.logger.info(f"Found {len(job_items)} job items on page {page}")
@@ -182,26 +218,26 @@ class TopcvSpider(BaseJobSpider):
 
             if is_vip:
                 # ---------- VIP JOB: T-based cutoff_follow, không dừng pagination ----------
-                if posted_date and posted_date < cutoff_follow:
+                if posted_date and cutoff_follow and posted_date < cutoff_follow:
                     self.vip_skipped_count += 1
                     self.logger.debug(
                         f"VIP job too old ({posted_date} < T-{self.DATE_FOLLOW_DAYS}d={cutoff_follow}), "
                         f"skipping (total skipped: {self.vip_skipped_count}): {job_url}"
                     )
                     continue   # skip card, never stops pagination
-                # VIP + đủ mới (hoặc không parse được date) → fall through
+                # VIP + đủ mới (hoặc không parse được date, hoặc full crawl mode) → fall through
 
             else:
-                # ---------- NORMAL JOB: T-based date filter ----------
+                # ---------- NORMAL JOB: T-based date filter (bỏ qua nếu full crawl mode) ----------
                 if posted_date:
-                    if posted_date < cutoff_stop:
+                    if cutoff_stop and posted_date < cutoff_stop:
                         self.logger.info(
                             f"Job too old ({posted_date} < T-{self.DATE_STOP_DAYS}d={cutoff_stop}), stopping pagination."
                         )
                         stop_pagination = True
                         break
 
-                    if posted_date < cutoff_follow:
+                    if cutoff_follow and posted_date < cutoff_follow:
                         self.logger.debug(f"Skipping (date {posted_date} < cutoff {cutoff_follow}): {job_url}")
                         continue
 
@@ -240,7 +276,31 @@ class TopcvSpider(BaseJobSpider):
                 meta={'page': next_page, 'base_search_url': base_search_url, 'playwright_context': self._playwright_ctx},
                 page_timeout=60000,
             )
+        else:
+            # Current URL finished — start next URL in queue (sequential mode)
+            yield from self._start_next_url()
     
+    def _start_next_url(self):
+        """Pop the next URL from the queue and start crawling it (sequential mode)."""
+        if not hasattr(self, '_url_queue') or not self._url_queue:
+            return
+        next_base = self._url_queue.pop(0)
+        remaining = len(self._url_queue)
+        self.logger.info(f"[Next URL] Starting: {next_base}  ({remaining} remaining in queue)")
+
+        # Reset stop flags for the new URL
+        self.should_stop = False
+        self.consecutive_dup_count = 0
+
+        first_url = self._paginate_url(next_base, 1)
+        self.logger.info(f"Requesting search page 1: {first_url}")
+        yield self.make_request(
+            url=first_url,
+            callback=self.parse,
+            meta={'page': 1, 'base_search_url': next_base, 'playwright_context': self._playwright_ctx},
+            page_timeout=60000,
+        )
+
     def parse_relative_date(self, text: str) -> str:
         """Convert '1 ngày trước', '3 giờ trước' → ISO date string"""
         now = datetime.now()

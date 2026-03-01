@@ -390,10 +390,21 @@ class JobRepository:
             session.rollback()
             return 0
 
-    def get_max_posted_date(self):
-        """Return max(posted_date) from jobs table, or None if table is empty."""
+    def get_max_posted_date(self, source: str = None):
+        """Return max(posted_date) from jobs table filtered by source.
+        
+        :param source: Source name to filter (e.g. 'itviec', 'topcv', 'linkedin').
+                       If None, queries across all sources.
+        :return: datetime.date or None (None means no jobs from that source yet).
+        """
         with self.Session() as session:
-            result = session.execute(text("SELECT MAX(posted_date) FROM jobs")).scalar()
+            if source:
+                result = session.execute(
+                    text("SELECT MAX(posted_date) FROM jobs WHERE source = :source"),
+                    {"source": source}
+                ).scalar()
+            else:
+                result = session.execute(text("SELECT MAX(posted_date) FROM jobs")).scalar()
             return result  # datetime.date or None
 
     def has_lsh_entry(self, session: Session, job_id: str) -> bool:

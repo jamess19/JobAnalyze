@@ -43,7 +43,7 @@ class ItviecSpider(BaseJobSpider):
         self.should_stop = False             # set True to stop pagination
 
     def _init_db(self):
-        """Load T = max(posted_date) from DB."""
+        """Load T = max(posted_date) từ DB, lọc theo source của spider này."""
         if self._max_date is not None:
             return
         from models.base import get_engine, get_session_factory
@@ -51,12 +51,14 @@ class ItviecSpider(BaseJobSpider):
         engine = get_engine(self.settings.get("DATABASE_URL"))
         session_factory = get_session_factory(engine)
         repo = JobRepository(session_factory)
-        max_date = repo.get_max_posted_date()
+        source = self.name.replace("_spider", "")  # 'itviec'
+        max_date = repo.get_max_posted_date(source=source)
         if max_date:
             self._max_date = max_date.date() if hasattr(max_date, 'date') else max_date
+            self.logger.info(f"Smart crawl [{source}]: T = {self._max_date} (DATE_FOLLOW >= T-{self.DATE_FOLLOW_DAYS}d, DATE_STOP < T-{self.DATE_STOP_DAYS}d, MAX_DUP={self.MAX_CONSECUTIVE_DUPS})")
         else:
-            self._max_date = datetime.now().date()
-        self.logger.info(f"Smart crawl: T = {self._max_date} (DATE_FOLLOW >= T-{self.DATE_FOLLOW_DAYS}d, DATE_STOP < T-{self.DATE_STOP_DAYS}d, MAX_DUP={self.MAX_CONSECUTIVE_DUPS})")
+            self._max_date = None  # Chưa có job từ source này → crawl toàn bộ
+            self.logger.info(f"Smart crawl [{source}]: No existing data → full crawl mode (no date filter)")
     
     def normalize_search_params(self) -> tuple:
         """Normalize keyword and location for URL"""
@@ -155,8 +157,9 @@ class ItviecSpider(BaseJobSpider):
         base_search_url = response.meta.get('base_search_url', '')
         self.logger.info(f"Parsing search page {page}: {response.url}")
 
-        cutoff_follow = self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)
-        cutoff_stop   = self._max_date - timedelta(days=self.DATE_STOP_DAYS)
+        # Nếu _max_date là None (chưa có data source này) → crawl toàn bộ, không lọc date
+        cutoff_follow = (self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)) if self._max_date else None
+        cutoff_stop   = (self._max_date - timedelta(days=self.DATE_STOP_DAYS))   if self._max_date else None
 
         job_items = response.css('div[data-controller="search--job-selection"]')
         if not job_items:
@@ -195,16 +198,16 @@ class ItviecSpider(BaseJobSpider):
                 posted_date_str = self.parse_relative_date(date_raw.strip())
                 posted_date = datetime.strptime(posted_date_str, '%Y-%m-%d').date()
 
-                # Quá cũ → dừng toàn bộ pagination
-                if posted_date < cutoff_stop:
+                # Quá cũ → dừng toàn bộ pagination (chỉ áp dụng khi có T)
+                if cutoff_stop and posted_date < cutoff_stop:
                     self.logger.info(
                         f"Job too old ({posted_date} < T-{self.DATE_STOP_DAYS}d={cutoff_stop}), stopping pagination."
                     )
                     stop_pagination = True
                     break
 
-                # Không đủ recent → skip card này, tiếp tục
-                if posted_date < cutoff_follow:
+                # Không đủ recent → skip card này, tiếp tục (chỉ áp dụng khi có T)
+                if cutoff_follow and posted_date < cutoff_follow:
                     self.logger.debug(f"Skipping (date {posted_date} < cutoff {cutoff_follow}): {absolute_url}")
                     continue
 

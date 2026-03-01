@@ -138,3 +138,26 @@ SELECT add_continuous_aggregate_policy('domain_daily_stats',
     start_offset => INTERVAL '1 month',
     end_offset => INTERVAL '1 hour',
     schedule_interval => INTERVAL '2 hours');
+
+-- =====================================================
+CALL refresh_continuous_aggregate(
+    'skill_daily_stats',
+    '2024-01-01', -- Ngày bắt đầu muốn tính
+    '2027-01-01'  -- Ngày kết thúc (cho tương lai để bao trọn hôm nay)
+);
+
+truncate job_skills, jobs, lsh_buckets cascade;
+
+CALL refresh_continuous_aggregate(
+    'skill_daily_stats', 
+    NULL, 
+    NULL
+);
+CALL refresh_continuous_aggregate(
+    'domain_daily_stats', 
+    NULL, 
+    NULL
+);
+COPY (SELECT * FROM jobs) 
+TO 'D:\jobs.csv' -- Hoặc đường dẫn file trên server
+WITH (FORMAT CSV, HEADER);
