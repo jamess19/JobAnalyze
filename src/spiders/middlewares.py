@@ -3,12 +3,95 @@
 # See documentation in:
 # https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
+import random
 from scrapy import signals
-
-# useful for handling different item types with a single interface
 from itemadapter import ItemAdapter
 
 
+# ---------------------------------------------------------------------------
+# Rotating User-Agent Middleware (TopCV & other spiders)
+# ---------------------------------------------------------------------------
+_TOPCV_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+]
+
+
+class RotatingUserAgentMiddleware:
+    """
+    Rotate User-Agent per request for spiders that set `rotate_user_agent = True`.
+    Also injects a realistic Referer header based on domain.
+    """
+
+    def process_request(self, request, spider):
+        if not getattr(spider, 'rotate_user_agent', False):
+            return None
+
+        ua = random.choice(_TOPCV_USER_AGENTS)
+        request.headers['User-Agent'] = ua
+
+        # Inject Referer if not already set
+        if not request.headers.get('Referer'):
+            referer = getattr(spider, 'referer_base', None)
+            if referer:
+                request.headers['Referer'] = referer
+
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit exponential backoff middleware (handles 429)
+# ---------------------------------------------------------------------------
+class RateLimitBackoffMiddleware:
+    """
+    When a 429 is received, wait with exponential backoff then retry.
+    Uses Twisted callLater — does NOT block the reactor.
+    Backoff schedule: 60s, 120s, 240s, 480s, 600s (max 5 retries).
+    Only active for spiders that set `rate_limit_backoff = True`.
+    """
+
+    MAX_RETRIES = 5
+    BASE_WAIT   = 60   # seconds
+    MAX_WAIT    = 600  # seconds cap
+
+    def process_response(self, request, response, spider):
+        if response.status != 429:
+            return response
+        if not getattr(spider, 'rate_limit_backoff', False):
+            return response
+
+        retry_count = request.meta.get('_rl_retry', 0)
+        if retry_count >= self.MAX_RETRIES:
+            spider.logger.error(
+                f"429 after {self.MAX_RETRIES} retries, giving up: {request.url}"
+            )
+            return response
+
+        wait = min(self.BASE_WAIT * (2 ** retry_count), self.MAX_WAIT)
+        spider.logger.warning(
+            f"429 rate limited → backing off {wait}s (retry {retry_count + 1}/{self.MAX_RETRIES}): {request.url}"
+        )
+
+        from twisted.internet import defer, reactor
+        new_req = request.copy()
+        new_req.meta['_rl_retry'] = retry_count + 1
+        new_req.dont_filter = True
+
+        d = defer.Deferred()
+        reactor.callLater(wait, d.callback, new_req)
+        return d
+
+
+# ---------------------------------------------------------------------------
+# Spider / Downloader middleware boilerplate
+# ---------------------------------------------------------------------------
 class SpidersSpiderMiddleware:
     # Not all methods need to be defined. If a method is not defined,
     # scrapy acts as if the spider middleware does not modify the

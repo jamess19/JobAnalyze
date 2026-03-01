@@ -354,6 +354,23 @@ class SkillExtractor:
         result = self.extract(text)
         return result['domains']
 
+    def get_skill_whitelist(self) -> set[str]:
+        """
+        Trả về tập hợp tất cả skill name đã được định nghĩa trong patterns.
+        Dùng để filter skills_tags trước khi insert DB.
+        """
+        whitelist = set()
+        for pattern in self.nlp.get_pipe("entity_ruler").patterns:
+            if pattern.get("label") == "SKILL":
+                p = pattern["pattern"]
+                if isinstance(p, str):
+                    whitelist.add(p.lower())
+                elif isinstance(p, list):
+                    # Pattern dạng token list → ghép lại
+                    tokens = [t.get("LOWER", t.get("TEXT", "")) for t in p]
+                    whitelist.add(" ".join(tokens).lower())
+        return whitelist
+
 
 # Singleton instance (optional, for performance)
 _extractor_instance = None

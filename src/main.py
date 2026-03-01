@@ -3,6 +3,7 @@
 
 import os
 import sys
+import argparse
 
 os.environ.setdefault("SCRAPY_SETTINGS_MODULE", "settings")
 
@@ -11,41 +12,60 @@ from services.scraper_service import ScraperService
 from services.export_service import ExportService
 
 
-def build_spider_configs(config: dict) -> list[dict]:
+def build_spider_configs(config: dict, spider_filter: str = None) -> list[dict]:
     configs = []
-    if config.get("itviec_keywords"):
+    
+    # ITViec
+    if config.get("itviec_urls"):
         configs.append({
             "spider": "itviec",
-            "keywords": config["itviec_keywords"],
-            "location": config.get("itviec_location", "ho-chi-minh"),
-            "start_page": 1, "end_page": 1,
+            "urls": config["itviec_urls"],
         })
-    if config.get("topcv_keywords"):
+
+    # TopCV
+    if config.get("topcv_urls"):
         configs.append({
             "spider": "topcv",
-            "keywords": config["topcv_keywords"],
-            "location": "Ho Chi Minh",
-            "start_page": config.get("topcv_start_page", 1),
-            "end_page": config.get("topcv_end_page", 1),
+            "urls": config["topcv_urls"],
         })
+    
+    # LinkedIn
     if config.get("linkedin_keywords"):
         configs.append({
             "spider": "linkedin",
             "keywords": config["linkedin_keywords"],
             "location": config.get("linkedin_location", "Vietnam"),
-            "start_page": 1, "end_page": 2,
+            "start_page": config.get("linkedin_start_page", 1),  # Fix hardcode
+            "end_page": config.get("linkedin_end_page", 2),       # Fix hardcode
         })
+    
+    # Filter nếu có --spider argument
+    if spider_filter and spider_filter != "all":
+        configs = [c for c in configs if c["spider"] == spider_filter]
+    
     return configs
 
 
 def main() -> int:
+    # Add argument parsing
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--spider",
+        choices=["itviec", "topcv", "linkedin", "all"],
+        default="all",
+        help="Spider to run (default: all)"
+    )
+    args = parser.parse_args()
+    
     config = DEFAULT_CONFIG
     output_folder = config.get("output_folder", "src/data")
-    spider_configs = build_spider_configs(config)
+    spider_configs = build_spider_configs(config, spider_filter=args.spider)
 
     if not spider_configs:
-        print("No spider configurations found")
+        print(f"No spider configurations found for: {args.spider}")
         return 1
+
+    print(f"Running spiders: {[c['spider'] for c in spider_configs]}")
 
     # Step 1: Scrape - Pipeline handles validate/clean/dedup/save DB/export
     scraper = ScraperService(spider_configs)

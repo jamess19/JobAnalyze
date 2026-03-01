@@ -3,6 +3,7 @@ Data Normalizer - Standardize and normalize extracted data
 """
 
 import re
+import unicodedata
 from typing import Optional, Dict, Any
 
 
@@ -17,18 +18,73 @@ class DataNormalizer:
         'lead': ['lead', 'team lead', 'tech lead', 'principal', 'staff', '8+', '10+'],
     }
     
-    # Location mappings
-    LOCATION_MAPPINGS = {
-        'Ho Chi Minh City': ['hồ chí minh', 'hcm', 'sài gòn', 'saigon', 'tp hcm', 'tp.hcm'],
-        'Hanoi': ['hà nội', 'hanoi', 'ha noi', 'hn'],
-        'Da Nang': ['đà nẵng', 'da nang', 'danang'],
-        'Can Tho': ['cần thơ', 'can tho'],
-        'Hai Phong': ['hải phòng', 'hai phong'],
-        'Bien Hoa': ['biên hòa', 'bien hoa'],
-        'Nha Trang': ['nha trang'],
-        'Hue': ['huế', 'hue'],
-        'Vung Tau': ['vũng tàu', 'vung tau'],
-    }
+    # 63 Provinces of Vietnam: (city_name slug, raw_name Vietnamese, [match aliases after diacritics removed])
+    PROVINCES_63 = [
+        ("an giang",           "An Giang",            ["an giang"]),
+        ("ba ria - vung tau",  "Bà Rịa - Vũng Tàu",   ["ba ria", "vung tau", "ba ria vung tau"]),
+        ("bac giang",          "Bắc Giang",            ["bac giang"]),
+        ("bac kan",            "Bắc Kạn",              ["bac kan"]),
+        ("bac lieu",           "Bạc Liêu",             ["bac lieu"]),
+        ("bac ninh",           "Bắc Ninh",             ["bac ninh"]),
+        ("ben tre",            "Bến Tre",              ["ben tre"]),
+        ("binh dinh",          "Bình Định",            ["binh dinh", "quy nhon", "quy nhơn"]),
+        ("binh duong",         "Bình Dương",           ["binh duong", "thu dau mot"]),
+        ("binh phuoc",         "Bình Phước",           ["binh phuoc"]),
+        ("binh thuan",         "Bình Thuận",           ["binh thuan", "phan thiet"]),
+        ("ca mau",             "Cà Mau",               ["ca mau"]),
+        ("can tho",            "Cần Thơ",              ["can tho"]),
+        ("cao bang",           "Cao Bằng",             ["cao bang"]),
+        ("da nang",            "Đà Nẵng",              ["da nang", "danang"]),
+        ("dak lak",            "Đắk Lắk",              ["dak lak", "dac lac", "buon ma thuot"]),
+        ("dak nong",           "Đắk Nông",             ["dak nong", "dac nong"]),
+        ("dien bien",          "Điện Biên",            ["dien bien"]),
+        ("dong nai",           "Đồng Nai",             ["dong nai", "bien hoa"]),
+        ("dong thap",          "Đồng Tháp",            ["dong thap", "cao lanh"]),
+        ("gia lai",            "Gia Lai",              ["gia lai", "pleiku"]),
+        ("ha giang",           "Hà Giang",             ["ha giang"]),
+        ("ha nam",             "Hà Nam",               ["ha nam"]),
+        ("ha noi",             "Hà Nội",               ["ha noi", "hanoi", " hn ", "ha nội"]),
+        ("ha tinh",            "Hà Tĩnh",              ["ha tinh"]),
+        ("hai duong",          "Hải Dương",            ["hai duong"]),
+        ("hai phong",          "Hải Phòng",            ["hai phong"]),
+        ("hau giang",          "Hậu Giang",            ["hau giang"]),
+        ("hoa binh",           "Hòa Bình",             ["hoa binh"]),
+        ("ho chi minh",        "Hồ Chí Minh",          ["ho chi minh", "hcm", "sai gon", "saigon",
+                                                        "tp hcm", "tp.hcm", "tphcm", "thanh pho ho chi minh"]),
+        ("hung yen",           "Hưng Yên",             ["hung yen"]),
+        ("khanh hoa",          "Khánh Hòa",            ["khanh hoa", "nha trang"]),
+        ("kien giang",         "Kiên Giang",           ["kien giang", "phu quoc", "rach gia"]),
+        ("kon tum",            "Kon Tum",              ["kon tum"]),
+        ("lai chau",           "Lai Châu",             ["lai chau"]),
+        ("lam dong",           "Lâm Đồng",             ["lam dong", "da lat", "dalat"]),
+        ("lang son",           "Lạng Sơn",             ["lang son"]),
+        ("lao cai",            "Lào Cai",              ["lao cai", "sapa", "sa pa"]),
+        ("long an",            "Long An",              ["long an", "tan an"]),
+        ("nam dinh",           "Nam Định",             ["nam dinh"]),
+        ("nghe an",            "Nghệ An",              ["nghe an", "vinh city", "thanh pho vinh"]),
+        ("ninh binh",          "Ninh Bình",            ["ninh binh"]),
+        ("ninh thuan",         "Ninh Thuận",           ["ninh thuan", "phan rang"]),
+        ("phu tho",            "Phú Thọ",              ["phu tho", "viet tri"]),
+        ("phu yen",            "Phú Yên",              ["phu yen", "tuy hoa"]),
+        ("quang binh",         "Quảng Bình",           ["quang binh", "dong hoi"]),
+        ("quang nam",          "Quảng Nam",            ["quang nam", "hoi an", "tam ky"]),
+        ("quang ngai",         "Quảng Ngãi",           ["quang ngai"]),
+        ("quang ninh",         "Quảng Ninh",           ["quang ninh", "ha long", "halong"]),
+        ("quang tri",          "Quảng Trị",            ["quang tri", "dong ha"]),
+        ("soc trang",          "Sóc Trăng",            ["soc trang"]),
+        ("son la",             "Sơn La",               ["son la"]),
+        ("tay ninh",           "Tây Ninh",             ["tay ninh"]),
+        ("thai binh",          "Thái Bình",            ["thai binh"]),
+        ("thai nguyen",        "Thái Nguyên",          ["thai nguyen"]),
+        ("thanh hoa",          "Thanh Hóa",            ["thanh hoa"]),
+        ("thua thien hue",     "Thừa Thiên Huế",       ["thua thien hue", " hue ", "tp hue", "thanh pho hue"]),
+        ("tien giang",         "Tiền Giang",           ["tien giang", "my tho"]),
+        ("tra vinh",           "Trà Vinh",             ["tra vinh"]),
+        ("tuyen quang",        "Tuyên Quang",          ["tuyen quang"]),
+        ("vinh long",          "Vĩnh Long",            ["vinh long"]),
+        ("vinh phuc",          "Vĩnh Phúc",            ["vinh phuc", "phuc yen"]),
+        ("yen bai",            "Yên Bái",              ["yen bai"]),
+    ]
     
     # Job category keywords
     JOB_CATEGORIES = {
@@ -114,26 +170,168 @@ class DataNormalizer:
         # Default fallback
         return 'Mid'
     
+    @staticmethod
+    def _remove_diacritics(text: str) -> str:
+        """Remove Vietnamese diacritics and return lowercased ASCII."""
+        nkfd = unicodedata.normalize('NFKD', str(text))
+        return ''.join(c for c in nkfd if not unicodedata.combining(c)).lower()
+
+    @classmethod
+    def normalize_location_to_province(cls, text: str):
+        """
+        Map raw location text to one of 63 Vietnamese provinces.
+
+        :return: (city_name_slug, raw_name_vietnamese) or (None, None)
+        """
+        if not text:
+            return None, None
+        normalized = cls._remove_diacritics(text)
+        # Pad with spaces to avoid partial matches (e.g. 'vinh' in 'vinh long')
+        padded = f' {normalized} '
+        for city_name, raw_name, aliases in cls.PROVINCES_63:
+            for alias in aliases:
+                if alias in padded or alias in normalized:
+                    return city_name, raw_name
+        return None, None
+
     @classmethod
     def normalize_location(cls, location_text: str) -> str:
+        """Legacy helper — returns city_name slug or 'Unknown'."""
+        slug, _ = cls.normalize_location_to_province(location_text)
+        return slug or 'Unknown'
+
+    @staticmethod
+    def parse_salary_topcv(text: str) -> dict:
         """
-        Normalize location to standard city names
-        
-        :param location_text: Raw location text
-        :return: Normalized city name
+        Parse salary text from TopCV into structured dict.
+        Patterns: 'Thỏa thuận', '26 - 35 triệu', 'Tới 30 triệu',
+                  '1,000 - 3,000 USD', 'Tới 4,000 USD'
+
+        :return: dict with keys salary_min, salary_max, salary_currency (all optional)
         """
-        if not location_text:
-            return 'Unknown'
-        
-        text = str(location_text).lower()
-        
-        for city, variations in cls.LOCATION_MAPPINGS.items():
-            for variation in variations:
-                if variation in text:
-                    return city
-        
-        # If not found in mappings, return title case
-        return location_text.strip().title()
+        if not text:
+            return {}
+        text = text.strip()
+        tl = text.lower()
+
+        negotiable_kws = ['thỏa thuận', 'thoả thuận', 'thoa thuan', 'negotiable', 'competitive']
+        if any(k in tl for k in negotiable_kws):
+            return {}
+
+        result = {}
+        currency = 'USD' if ('usd' in tl or '$' in text) else 'VND'
+        result['salary_currency'] = currency
+
+        def clean_num(s):
+            return float(s.replace(',', '').replace('.', '').strip())
+
+        if currency == 'VND':
+            mult = 1_000_000  # triệu → VND
+            range_m = re.search(r'(\d+(?:[,.]\d+)?)\s*[-–]\s*(\d+(?:[,.]\d+)?)\s*tri[eệ]u', text, re.IGNORECASE)
+            upto_m  = re.search(r'(?:tới|đến|lên đến|up to)\s*(\d+(?:[,.]\d+)?)\s*tri[eệ]u', text, re.IGNORECASE)
+            single_m = re.search(r'(\d+(?:[,.]\d+)?)\s*tri[eệ]u', text, re.IGNORECASE)
+            if range_m:
+                result['salary_min'] = int(float(range_m.group(1).replace(',', '.')) * mult)
+                result['salary_max'] = int(float(range_m.group(2).replace(',', '.')) * mult)
+            elif upto_m:
+                result['salary_max'] = int(float(upto_m.group(1).replace(',', '.')) * mult)
+            elif single_m:
+                val = int(float(single_m.group(1).replace(',', '.')) * mult)
+                result['salary_min'] = val
+                result['salary_max'] = val
+        else:  # USD
+            range_u  = re.search(r'(\d[\d,]*(?:\.\d+)?)\s*[-–]\s*(\d[\d,]*(?:\.\d+)?)', text)
+            upto_u   = re.search(r'(?:tới|đến|lên đến|up to)\s*(\d[\d,]*(?:\.\d+)?)', text, re.IGNORECASE)
+            if range_u:
+                result['salary_min'] = int(float(range_u.group(1).replace(',', '')))
+                result['salary_max'] = int(float(range_u.group(2).replace(',', '')))
+            elif upto_u:
+                result['salary_max'] = int(float(upto_u.group(1).replace(',', '')))
+
+        # Drop currency key if no amounts found
+        if 'salary_min' not in result and 'salary_max' not in result:
+            return {}
+        return result
+
+    @staticmethod
+    def extract_experience_from_tags(tags) -> str | None:
+        """
+        Extract experience string from TopCV skills_tags list.
+        Tags like: '3 năm kinh nghiệm', 'Dưới 1 năm kinh nghiệm', 'Không yêu cầu kinh nghiệm'
+        """
+        if not tags:
+            return None
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(',')]
+        for tag in tags:
+            tl = tag.lower()
+            if 'không yêu cầu kinh nghiệm' in tl:
+                return 'Không yêu cầu'
+            m = re.search(r'dưới\s*(\d+)\s*năm', tl)
+            if m:
+                return f'Dưới {m.group(1)} năm'
+            m = re.search(r'trên\s*(\d+)\s*năm', tl)
+            if m:
+                return f'Trên {m.group(1)} năm'
+            m = re.search(r'(\d+)\s*năm\s*kinh\s*nghiệm', tl)
+            if m:
+                return f'{m.group(1)} năm'
+        return None
+
+    @staticmethod
+    def extract_experience_from_text(text: str) -> str | None:
+        """
+        Extract experience from free-form requirements text.
+        """
+        if not text:
+            return None
+        tl = text.lower()
+
+        no_exp_kws = [
+            'không yêu cầu kinh nghiệm', 'no experience required',
+            'no experience needed', 'fresh graduate', 'fresher',
+            '0 year', '0 năm kinh nghiệm',
+        ]
+        if any(k in tl for k in no_exp_kws):
+            return 'Không yêu cầu'
+
+        patterns = [
+            # "X+ years" / "X years+"
+            (r'(\d+)\s*\+\s*years?',                                         lambda m: f'{m.group(1)}+ năm'),
+            (r'(\d+)\s*years?\s*\+',                                          lambda m: f'{m.group(1)}+ năm'),
+
+            # "X - Y years"
+            (r'(\d+)\s*[-–to]\s*(\d+)\s*years?\s*of\s*experience',           lambda m: f'{m.group(1)}-{m.group(2)} năm'),
+            (r'(\d+)\s*[-–]\s*(\d+)\s*years?',                               lambda m: f'{m.group(1)}-{m.group(2)} năm'),
+
+            # "at least / minimum / require minimum / a minimum of X years"
+            (r'at\s*least\s*(\d+)\s*years?',                                  lambda m: f'{m.group(1)}+ năm'),
+            (r'minim(?:um|ally)\s*(?:of\s*)?(\d+)\s*years?',                 lambda m: f'{m.group(1)}+ năm'),
+            (r'require[sd]?\s+(?:a\s+)?minim(?:um|ally)\s*(?:of\s*)?(\d+)\s*years?',
+                                                                               lambda m: f'{m.group(1)}+ năm'),
+            (r'(?:a\s+)?minimum\s+of\s+(\d+)\s*years?',                      lambda m: f'{m.group(1)}+ năm'),
+
+            # "more than / over / above X years"
+            (r'(?:more\s+than|over|above|exceeding)\s*(\d+)\s*years?',        lambda m: f'{m.group(1)}+ năm'),
+
+            # "X years of experience" (generic)
+            (r'(\d+)\s*years?\s*of\s*(?:relevant\s*|working\s*|practical\s*)?experience',
+                                                                               lambda m: f'{m.group(1)} năm'),
+            # "experience of X years"
+            (r'experience\s*of\s*(?:at\s*least\s*)?(\d+)\s*(?:\+\s*)?years?', lambda m: f'{m.group(1)} năm'),
+
+            # Vietnamese patterns
+            (r'(\d+)\s*năm\s*kinh\s*nghi[eệ]m',                              lambda m: f'{m.group(1)} năm'),
+            (r'kinh\s*nghi[ệ]m\s*(\d+)\s*năm',                              lambda m: f'{m.group(1)} năm'),
+            (r'tối\s*thiểu\s*(\d+)\s*năm',                                    lambda m: f'{m.group(1)}+ năm'),
+            (r'ít\s*nhất\s*(\d+)\s*năm',                                      lambda m: f'{m.group(1)}+ năm'),
+            (r'trên\s*(\d+)\s*năm',                                            lambda m: f'{m.group(1)}+ năm'),
+        ]
+        for pattern, formatter in patterns:
+            m = re.search(pattern, tl)
+            if m:
+                return formatter(m)
+        return None
     
     @classmethod
     def infer_job_category(cls, title: str, description: str = None) -> Optional[str]:

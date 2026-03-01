@@ -34,7 +34,7 @@ class GoogleDriveUploader(BaseUploader):
                 else:
                     flow = InstalledAppFlow.from_client_secrets_file(
                         self.client_secret_file, self.scopes)
-                    creds = flow.run_local_server(port=self.port, host='localhost', redirect_uri=self.redirect_uri)    
+                    creds = flow.run_local_server(port=self.port)    
                 
                 with open(self.token_file, 'w') as token:
                     token.write(creds.to_json())

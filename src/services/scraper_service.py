@@ -1,6 +1,7 @@
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 
+from pipelines.export import ExportPipeline
 from spiders.spiders.itviec_spider import ItviecSpider
 from spiders.spiders.topcv_spider import TopcvSpider
 from spiders.spiders.linkedin_spider import LinkedinSpider
@@ -26,13 +27,23 @@ class ScraperService:
             spider_class = SPIDER_CLASSES.get(spider_name)
             if not spider_class:
                 continue
-            for keyword in config.get("keywords", []):
-                process.crawl(
-                    spider_class,
-                    keyword=keyword,
-                    location=config.get("location", ""),
-                    start_page=config.get("start_page", 1),
-                    end_page=config.get("end_page", 1),
-                )
+
+            if config.get("urls"):
+                # URL-based crawl: one instance per URL
+                for url in config["urls"]:
+                    process.crawl(spider_class, start_url=url)
+            else:
+                # Legacy keyword-based crawl (LinkedIn still uses this)
+                for keyword in config.get("keywords", []):
+                    process.crawl(
+                        spider_class,
+                        keyword=keyword,
+                        location=config.get("location", ""),
+                        start_page=config.get("start_page", 1),
+                        end_page=config.get("end_page", 1),
+                    )
 
         process.start()
+
+        # All spiders have finished — write everything to one consolidated file
+        ExportPipeline.export_all()

@@ -55,5 +55,6 @@ class JobItem(scrapy.Item):
     lsh_buckets = scrapy.Field()          # List of (band_idx, bucket_hash) tuples for LSH
     minhash_signature = scrapy.Field()    # List of 128 integers for Jaccard similarity
     domains = scrapy.Field()              # List of business domains (from SkillExtractor)
+    is_vip = scrapy.Field()               # True for VIP/promoted jobs (skip consecutive dup counting)
 
 SpidersItem = JobItem
