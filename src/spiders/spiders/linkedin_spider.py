@@ -258,8 +258,8 @@ class LinkedinSpider(BaseJobSpider):
     # job cards per page.  `start` increments by 25.
     _API_TPL = "{base}/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={kw}&location={loc}&start={start}"
 
-    # How many jobs per API page (LinkedIn uses 25)
-    _PAGE_SIZE = 25
+    # How many jobs per API page (LinkedIn guest API returns 10 per page)
+    _PAGE_SIZE = 10
 
     # Maximum start offset to try (LinkedIn caps guest results ~1000)
     _MAX_START = 1000
