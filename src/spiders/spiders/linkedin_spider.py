@@ -153,42 +153,120 @@ class LinkedinSpider(BaseJobSpider):
         self.is_logged_in = False
         yield from self.generate_search_requests()
 
-    # JavaScript that runs inside Playwright's event loop to scroll the
-    # infinite-scroll job list before the response is returned to parse().
+    # JavaScript executed inside Playwright's own event loop (via PageMethod)
+    # to scroll the infinite-scroll job list.  Because scrapy-playwright runs
+    # Playwright on a separate thread we CANNOT call page.evaluate() from the
+    # spider callback — that causes "different event loop" errors.
+    #
+    # LinkedIn uses infinite scroll + "See more jobs" button cycling.
+    # The target card count is read dynamically from the page header.
     _SCROLL_JS = """
     (async () => {
-        const maxScrolls = 30;
-        let noChangeCount = 0;
-        for (let i = 0; i < maxScrolls; i++) {
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+        const startTime = Date.now();
+        const MAX_RUNTIME = 5 * 60 * 1000;  /* 5 minutes hard cap */
+
+        const dismissModals = () => {
+            for (const sel of [
+                'button[data-tracking-control-name="public_jobs_contextual-sign-in-modal_modal_dismiss"]',
+                '.modal__dismiss',
+                '.contextual-sign-in-modal__modal-dismiss',
+                'button[aria-label="Dismiss"]'
+            ]) {
+                const el = document.querySelector(sel);
+                if (el) { el.click(); break; }
+            }
+        };
+
+        const getCardCount = () =>
+            document.querySelectorAll('div.job-search-card').length;
+
+        const getTargetCount = () => {
+            const el = document.querySelector('.results-context-header__job-count')
+                    || document.querySelector('h1');
+            if (el) {
+                const m = el.textContent.replace(/,/g, '').match(/(\\d+)/);
+                if (m) return parseInt(m[1], 10);
+            }
+            return 1000;
+        };
+
+        const clickSeeMore = () => {
             const btn = document.querySelector(
                 'button.infinite-scroller__show-more-button--visible'
+            ) || document.querySelector(
+                'button.infinite-scroller__show-more-button'
+            ) || document.querySelector(
+                'button[aria-label="See more jobs"]'
             );
             if (btn) {
+                btn.scrollIntoView();
                 btn.click();
-                await new Promise(r => setTimeout(r, 5000));
-                noChangeCount = 0;
+                return true;
+            }
+            return false;
+        };
+
+        /* ── config ────────────────────────────────────────────── */
+        const MAX_ATTEMPTS   = 100;
+        const SCROLL_WAIT    = 3000;
+        const BTN_WAIT       = 5000;
+        const NO_CHANGE_MAX  = 8;
+
+        const target = getTargetCount();
+        let noChangeCount = 0;
+
+        for (let i = 0; i < MAX_ATTEMPTS; i++) {
+            /* Hard time limit */
+            if (Date.now() - startTime > MAX_RUNTIME) break;
+
+            dismissModals();
+
+            const prevCards = getCardCount();
+            if (prevCards >= target) break;
+
+            /* 1. Try "See more jobs" button */
+            if (clickSeeMore()) {
+                await sleep(BTN_WAIT);
+                /* Only reset noChangeCount if cards actually increased */
+                if (getCardCount() > prevCards) {
+                    noChangeCount = 0;
+                } else {
+                    noChangeCount++;
+                }
+                if (noChangeCount >= NO_CHANGE_MAX) break;
                 continue;
             }
-            const prevHeight = document.body.scrollHeight;
+
+            /* 2. Scroll down */
             window.scrollTo(0, document.body.scrollHeight);
-            await new Promise(r => setTimeout(r, 4000));
-            const newHeight = document.body.scrollHeight;
-            if (newHeight <= prevHeight) {
-                noChangeCount++;
-                if (noChangeCount >= 2) break;
-            } else {
+            await sleep(SCROLL_WAIT);
+
+            /* 3. Check progress */
+            const newCards = getCardCount();
+            if (newCards > prevCards) {
                 noChangeCount = 0;
+            } else {
+                noChangeCount++;
+                if (noChangeCount >= NO_CHANGE_MAX) break;
             }
         }
     })()
     """
 
-    def generate_search_requests(self):
-        """Yield one Playwright search request per keyword.
+    # LinkedIn guest API for pagination – returns HTML fragments with ~25
+    # job cards per page.  `start` increments by 25.
+    _API_TPL = "{base}/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={kw}&location={loc}&start={start}"
 
-        All scroll / click-'See more jobs' logic runs as a JavaScript
-        PageMethod inside Playwright's own event loop, so no async parse
-        coroutine is required and there is no event-loop mismatch.
+    # How many jobs per API page (LinkedIn uses 25)
+    _PAGE_SIZE = 25
+
+    # Maximum start offset to try (LinkedIn caps guest results ~1000)
+    _MAX_START = 1000
+
+    def generate_search_requests(self):
+        """Yield one Playwright request per keyword (page 0) to read total count,
+        then API requests for pages 1..N are generated in parse_first_page.
         """
         self.logger.info(
             f"Starting LinkedIn search: {len(self.keywords)} keyword(s), "
@@ -198,19 +276,21 @@ class LinkedinSpider(BaseJobSpider):
         for keyword in self.keywords:
             kw_enc  = keyword.replace(" ", "%20")
             loc_enc = self.location.replace(" ", "%20")
+            # First page uses the normal search URL with Playwright to get the
+            # target count from the page header and the first batch of cards.
             url = f"{self.base_url}/jobs/search/?keywords={kw_enc}&location={loc_enc}&start=0"
             self.logger.info(f"Queuing keyword: '{keyword}' → {url}")
             yield scrapy.Request(
                 url=url,
-                callback=self.parse,
+                callback=self.parse_first_page,
                 errback=lambda f, u=url: self.handle_error(f, u),
                 meta={
                     "playwright": True,
                     "playwright_page_goto_kwargs": {
                         "wait_until": "domcontentloaded",
-                        "timeout": 60000,
+                        "timeout": 120000,  # 2 min for first page
                     },
-                    "playwright_page_coroutines": [
+                    "playwright_page_methods": [
                         PageMethod("evaluate", self._SCROLL_JS),
                     ],
                     "keyword": keyword,
@@ -218,23 +298,12 @@ class LinkedinSpider(BaseJobSpider):
                 dont_filter=True,
             )
 
-    def parse(self, response):
+    # ── parse helpers ─────────────────────────────────────────────────────
+
+    def _extract_cards(self, response, keyword):
+        """Extract job cards from a response.
+        Returns (list_of_requests, queued_count).
         """
-        Parse LinkedIn search results.
-
-        By the time this callback is invoked, scrapy-playwright has already
-        executed _SCROLL_JS inside its own event loop (via page_coroutines),
-        so response.text contains the fully-scrolled page HTML.  No async /
-        await is needed here, which avoids the "different event loop" error.
-        """
-        keyword = response.meta.get("keyword", "")
-
-        # Reset per-keyword dup state so each keyword starts fresh.
-        self.should_stop = False
-        self.consecutive_dup_count = 0
-
-        self.logger.info(f"[{keyword}] Parsing scrolled results: {response.url}")
-
         cutoff_follow = (
             (self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS))
             if self._max_date else None
@@ -242,11 +311,10 @@ class LinkedinSpider(BaseJobSpider):
 
         job_cards = response.css('div.job-search-card')
         if not job_cards:
-            self.logger.warning(f"[{keyword}] No job cards found in response.")
-            return
+            return [], 0
 
-        self.logger.info(f"[{keyword}] {len(job_cards)} job cards to process.")
         seen_urls: set = set()
+        requests = []
         queued = 0
 
         for job_card in job_cards:
@@ -265,7 +333,7 @@ class LinkedinSpider(BaseJobSpider):
                 continue
             seen_urls.add(job_url)
 
-            # ── Date filter: skip old cards ──────────────────────────────────
+            # ── Date filter ──
             date_attr = (
                 job_card.css('time.job-search-card__listdate::attr(datetime)').get()
                 or job_card.css('time.job-search-card__listdate--new::attr(datetime)').get()
@@ -290,16 +358,79 @@ class LinkedinSpider(BaseJobSpider):
                 'date_posted': date_attr[:10] if date_attr else None,
             }
 
-            self.logger.debug(f"[{keyword}] Queuing job detail: {job_url}")
-            yield self.make_request(
+            requests.append(self.make_request(
                 url=job_url,
                 callback=self.parse_job_detail,
                 meta={'basic_info': basic_info},
                 use_playwright=True,
-            )
+            ))
             queued += 1
 
-        self.logger.info(f"[{keyword}] Done: {queued}/{len(seen_urls)} cards queued for detail.")
+        return requests, queued
+
+    def parse_first_page(self, response):
+        """Parse the first page (loaded via Playwright) to get the total
+        job count, then yield API requests for subsequent pages.
+        """
+        keyword = response.meta.get("keyword", "")
+        self.should_stop = False
+        self.consecutive_dup_count = 0
+
+        self.logger.info(f"[{keyword}] Parsing first page: {response.url}")
+
+        # ── Extract target count from page header ──
+        target_text = (
+            response.css('.results-context-header__job-count::text').get('')
+            or response.css('h1::text').get('')
+        )
+        target_count = 1000  # default
+        m = re.search(r'([\d,]+)', target_text.replace(',', ''))
+        if m:
+            target_count = int(m.group(1))
+        target_count = min(target_count, self._MAX_START)
+        self.logger.info(f"[{keyword}] Target job count: {target_count}")
+
+        # ── Extract cards from first page ──
+        requests, queued = self._extract_cards(response, keyword)
+        for req in requests:
+            yield req
+
+        self.logger.info(f"[{keyword}] First page: {queued} cards queued.")
+
+        # ── Yield API requests for remaining pages ──
+        kw_enc  = keyword.replace(" ", "%20")
+        loc_enc = self.location.replace(" ", "%20")
+
+        for start in range(self._PAGE_SIZE, target_count, self._PAGE_SIZE):
+            api_url = self._API_TPL.format(
+                base=self.base_url, kw=kw_enc, loc=loc_enc, start=start
+            )
+            self.logger.info(f"[{keyword}] Queuing API page start={start}")
+            yield scrapy.Request(
+                url=api_url,
+                callback=self.parse_api_page,
+                errback=lambda f, u=api_url: self.handle_error(f, u),
+                meta={"keyword": keyword, "start": start},
+                dont_filter=True,
+            )
+
+    def parse_api_page(self, response):
+        """Parse an API pagination page (plain HTML fragment, no Playwright)."""
+        keyword = response.meta.get("keyword", "")
+        start = response.meta.get("start", "?")
+
+        job_cards = response.css('div.job-search-card')
+        if not job_cards:
+            self.logger.info(f"[{keyword}] API page start={start}: no cards (end of results).")
+            return
+
+        self.logger.info(f"[{keyword}] API page start={start}: {len(job_cards)} cards.")
+
+        requests, queued = self._extract_cards(response, keyword)
+        for req in requests:
+            yield req
+
+        self.logger.info(f"[{keyword}] API page start={start}: {queued} cards queued for detail.")
 
     def parse_job_detail(self, response):
         """
