@@ -192,6 +192,9 @@ class TopcvSpider(BaseJobSpider):
 
             job_url = urljoin(self.base_url, title_link)
 
+            # Normalize URL: strip tracking params
+            job_url = self.normalize_job_url(job_url)
+
             # URL-level dedup (within same crawl run)
             if job_url in self.seen_jobs:
                 self.logger.debug(f"Skipping duplicate job: {job_url}")

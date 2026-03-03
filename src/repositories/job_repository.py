@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from models import Job, Location, Skill, Domain
 from models.associations import job_skills, job_domain
-from utils.skill_extractor import SkillExtractor
+from utils.skill_normalizer import SkillNormalizer
 from utils.normalizer import DataNormalizer
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class JobRepository:
     def __init__(self, session_factory):
         self.Session = session_factory
-        self.ALLOWED_SKILLS = SkillExtractor().get_skill_whitelist()
+        self.skill_normalizer = SkillNormalizer()
         self.normalizer = DataNormalizer()
 
     def save_batch(self, items: list[dict]) -> int:
@@ -128,18 +128,34 @@ class JobRepository:
         if isinstance(skills_raw, str):
             skills_raw = [s.strip() for s in skills_raw.split(",")]
 
+        seen: set[str] = set()
         for skill_name in skills_raw:
             if not skill_name:
                 continue
-            if self.ALLOWED_SKILLS and skill_name.lower() not in self.ALLOWED_SKILLS:
-                logger.debug(f"Skipping skill not in whitelist: '{skill_name}'")
+
+            # Normalize to canonical form
+            canonical = self.skill_normalizer.normalize(skill_name)
+            if not canonical or canonical in seen:
                 continue
+            seen.add(canonical)
+
+            category = self.skill_normalizer.get_category(canonical)
+
+            # Upsert skill with category
+            set_clause = {"category": category} if category else {}
             stmt = insert(Skill).values(
-                name=skill_name
+                name=canonical,
+                category=category,
+            ).on_conflict_do_update(
+                index_elements=["name"],
+                set_=set_clause,
+            ) if set_clause else insert(Skill).values(
+                name=canonical,
+                category=category,
             ).on_conflict_do_nothing(index_elements=["name"])
             session.execute(stmt)
 
-            skill = session.query(Skill).filter_by(name=skill_name).first()
+            skill = session.query(Skill).filter_by(name=canonical).first()
             session.execute(
                 insert(job_skills).values(
                     job_id=job.id,
@@ -254,28 +270,26 @@ class JobRepository:
             logger.error(f"Error querying LSH buckets: {e}")
             return set()
 
-    def get_signatures(self, session: Session, job_ids: list[str]) -> dict[str, list[int]]:
+    def get_signatures(self, session: Session, job_ids: list[str]) -> dict[str, dict]:
         """
-        Fetch MinHash signatures for a list of job IDs.
+        Fetch MinHash signatures, posted_date, company_name, and location_id
+        for a list of job IDs.
         
         :param session: SQLAlchemy session
         :param job_ids: List of job UUID strings
-        :return: Dictionary mapping job_id -> signature (list of 128 integers)
-        
-        Example:
-            job_ids = ['uuid-1', 'uuid-2']
-            Returns: {
-                'uuid-1': [12, 45, 67, ...],  # 128 integers
-                'uuid-2': [23, 56, 89, ...]
-            }
+        :return: Dictionary mapping job_id -> {
+            "signature": list[int],
+            "posted_date": datetime,
+            "company_name": str | None,
+            "location_id": int | None,
+        }
         """
         if not job_ids:
             return {}
         
         try:
-            # Query to fetch signatures
             query = text("""
-                SELECT id, minhash_signature 
+                SELECT id, minhash_signature, posted_date, company_name, location_id
                 FROM jobs 
                 WHERE id = ANY(:job_ids)
                 AND minhash_signature IS NOT NULL
@@ -288,8 +302,16 @@ class JobRepository:
             for row in result:
                 job_id = str(row[0])
                 signature = row[1]  # PostgreSQL ARRAY mapped to Python list
+                posted_date = row[2]
+                company_name = row[3]
+                location_id = row[4]
                 if signature:
-                    signatures[job_id] = signature
+                    signatures[job_id] = {
+                        "signature": signature,
+                        "posted_date": posted_date,
+                        "company_name": company_name,
+                        "location_id": location_id,
+                    }
             
             logger.debug(f"Fetched {len(signatures)} signatures for {len(job_ids)} candidates")
             return signatures

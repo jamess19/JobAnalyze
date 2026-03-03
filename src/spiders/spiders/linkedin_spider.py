@@ -2,10 +2,10 @@
 LinkedIn Spider - Scrape job listings from linkedin.com
 Strategy:
   - One spider instance processes all keywords sequentially.
-  - Uses Playwright to scroll the infinite-scroll page and click "See more jobs".
-  - Date filter: if max(posted_date) exists in DB for 'linkedin' source, skip individual
-    cards older than T - DATE_FOLLOW_DAYS, but NEVER stop pagination on date alone.
-  - Stops only when consecutive duplicate count >= MAX_CONSECUTIVE_DUPS.
+  - First page loaded via Playwright to read target count, then API pagination.
+  - LinkedIn does NOT sort by date, so no date-based filtering is used.
+  - Stops only when consecutive duplicate count >= MAX_CONSECUTIVE_DUPS (checked
+    by the DeduplicationPipeline via Jaccard similarity against DB).
 """
 
 import scrapy
@@ -14,7 +14,7 @@ from urllib.parse import urljoin
 from scrapy_playwright.page import PageMethod
 from spiders.spiders.base_spider import BaseJobSpider
 from spiders.items import JobItem
-from datetime import datetime, timedelta
+from datetime import datetime
 from config.config import LINKEDIN_EMAIL, LINKEDIN_PASSWORD
 
 
@@ -36,7 +36,6 @@ class LinkedinSpider(BaseJobSpider):
 
     # Smart crawl settings
     MAX_CONSECUTIVE_DUPS = 15
-    DATE_FOLLOW_DAYS     = 2   # skip card if posted_date < T - N days (but never stop)
 
     def __init__(self, keywords=None, *args, **kwargs):
         # Accept either keywords (list) from ScraperService or keyword (str) from run_spiders.py
@@ -65,13 +64,13 @@ class LinkedinSpider(BaseJobSpider):
             self.logger.warning("LinkedIn credentials not configured. Some jobs may not be accessible.")
 
         # Smart crawl state
-        self._max_date = None
         self.should_stop = False
         self.consecutive_dup_count = 0
         self.per_keyword_stop = True   # stop per-keyword, not entire spider
 
     def _init_db(self):
-        """Load T = max(posted_date) từ DB, lọc theo source 'linkedin'."""
+        """Check DB for existing linkedin data (used for logging only;
+        actual dedup is handled by DeduplicationPipeline)."""
         from models.base import get_engine, get_session_factory
         from repositories.job_repository import JobRepository
         engine = get_engine(self.settings.get("DATABASE_URL"))
@@ -80,15 +79,15 @@ class LinkedinSpider(BaseJobSpider):
         source = self.name.replace("_spider", "")  # 'linkedin'
         max_date = repo.get_max_posted_date(source=source)
         if max_date:
-            self._max_date = max_date.date() if hasattr(max_date, 'date') else max_date
             self.logger.info(
-                f"Smart crawl [linkedin]: T = {self._max_date} "
-                f"(skip cards older than T-{self.DATE_FOLLOW_DAYS}d, "
-                f"stop on {self.MAX_CONSECUTIVE_DUPS} consecutive dups)"
+                f"Smart crawl [linkedin]: DB has data up to {max_date} "
+                f"(stop on {self.MAX_CONSECUTIVE_DUPS} consecutive dups)"
             )
         else:
-            self._max_date = None
-            self.logger.info("Smart crawl [linkedin]: No existing data → full crawl mode (no date filter)")
+            self.logger.info(
+                f"Smart crawl [linkedin]: No existing data → full crawl "
+                f"(stop on {self.MAX_CONSECUTIVE_DUPS} consecutive dups)"
+            )
 
     def start_requests(self):
         """Generate initial requests - login first if credentials available."""
@@ -303,12 +302,9 @@ class LinkedinSpider(BaseJobSpider):
     def _extract_cards(self, response, keyword):
         """Extract job cards from a response.
         Returns (list_of_requests, queued_count).
+        No date filtering — LinkedIn doesn't sort by date.
+        Dedup is handled downstream by DeduplicationPipeline.
         """
-        cutoff_follow = (
-            (self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS))
-            if self._max_date else None
-        )
-
         job_cards = response.css('div.job-search-card')
         if not job_cards:
             return [], 0
@@ -329,27 +325,18 @@ class LinkedinSpider(BaseJobSpider):
                 job_url
             )
 
+            # Normalize URL: strip tracking params (trackingId, refId, etc.)
+            job_url = self.normalize_job_url(job_url)
+
             if job_url in seen_urls:
                 continue
             seen_urls.add(job_url)
 
-            # ── Date filter ──
+            # ── Extract date (for metadata only, NOT for filtering) ──
             date_attr = (
                 job_card.css('time.job-search-card__listdate::attr(datetime)').get()
                 or job_card.css('time.job-search-card__listdate--new::attr(datetime)').get()
             )
-            posted_date = None
-            if date_attr:
-                try:
-                    posted_date = datetime.strptime(date_attr[:10], '%Y-%m-%d').date()
-                except ValueError:
-                    pass
-
-            if posted_date and cutoff_follow and posted_date < cutoff_follow:
-                self.logger.debug(
-                    f"[{keyword}] Skipping old card ({posted_date} < {cutoff_follow}): {job_url}"
-                )
-                continue
 
             basic_info = {
                 'title':       job_card.css('h3.base-search-card__title::text').get('').strip(),
@@ -370,7 +357,8 @@ class LinkedinSpider(BaseJobSpider):
 
     def parse_first_page(self, response):
         """Parse the first page (loaded via Playwright) to get the total
-        job count, then yield API requests for subsequent pages.
+        job count, then yield a CHAINED API request for the next page.
+        Each API page will chain to the next, checking should_stop.
         """
         keyword = response.meta.get("keyword", "")
         self.should_stop = False
@@ -397,27 +385,48 @@ class LinkedinSpider(BaseJobSpider):
 
         self.logger.info(f"[{keyword}] First page: {queued} cards queued.")
 
-        # ── Yield API requests for remaining pages ──
+        # ── Chain to first API page (start=PAGE_SIZE) ──
+        first_start = self._PAGE_SIZE
+        if first_start < target_count:
+            yield from self._yield_next_api_page(keyword, first_start, target_count)
+
+    def _yield_next_api_page(self, keyword, start, target_count):
+        """Yield a single API request for the given start offset.
+        The callback (parse_api_page) will chain to the next page.
+        """
         kw_enc  = keyword.replace(" ", "%20")
         loc_enc = self.location.replace(" ", "%20")
-
-        for start in range(self._PAGE_SIZE, target_count, self._PAGE_SIZE):
-            api_url = self._API_TPL.format(
-                base=self.base_url, kw=kw_enc, loc=loc_enc, start=start
-            )
-            self.logger.info(f"[{keyword}] Queuing API page start={start}")
-            yield scrapy.Request(
-                url=api_url,
-                callback=self.parse_api_page,
-                errback=lambda f, u=api_url: self.handle_error(f, u),
-                meta={"keyword": keyword, "start": start},
-                dont_filter=True,
-            )
+        api_url = self._API_TPL.format(
+            base=self.base_url, kw=kw_enc, loc=loc_enc, start=start
+        )
+        self.logger.info(f"[{keyword}] Queuing API page start={start}")
+        yield scrapy.Request(
+            url=api_url,
+            callback=self.parse_api_page,
+            errback=lambda f, u=api_url: self.handle_error(f, u),
+            meta={
+                "keyword": keyword,
+                "start": start,
+                "target_count": target_count,
+            },
+            dont_filter=True,
+        )
 
     def parse_api_page(self, response):
-        """Parse an API pagination page (plain HTML fragment, no Playwright)."""
+        """Parse an API pagination page, then chain to the next page
+        unless should_stop is True or we've reached the target count.
+        """
         keyword = response.meta.get("keyword", "")
-        start = response.meta.get("start", "?")
+        start = response.meta.get("start", 0)
+        target_count = response.meta.get("target_count", self._MAX_START)
+
+        # ── Check early stop BEFORE processing ──
+        if self.should_stop:
+            self.logger.info(
+                f"[{keyword}] Stopping API pagination at start={start} "
+                f"(should_stop=True, {self.consecutive_dup_count} consecutive dups)"
+            )
+            return
 
         job_cards = response.css('div.job-search-card')
         if not job_cards:
@@ -431,6 +440,11 @@ class LinkedinSpider(BaseJobSpider):
             yield req
 
         self.logger.info(f"[{keyword}] API page start={start}: {queued} cards queued for detail.")
+
+        # ── Chain to next page (if not stopped and within target) ──
+        next_start = start + self._PAGE_SIZE
+        if next_start < target_count and not self.should_stop:
+            yield from self._yield_next_api_page(keyword, next_start, target_count)
 
     def parse_job_detail(self, response):
         """

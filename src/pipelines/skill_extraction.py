@@ -13,6 +13,7 @@ Lý do dùng pipeline riêng (không làm trong spider):
 import logging
 from itemadapter import ItemAdapter
 from utils.skill_extractor import get_skill_extractor
+from utils.skill_normalizer import SkillNormalizer
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,14 @@ class SkillExtractionPipeline:
 
     def open_spider(self, spider):
         self.extractor = get_skill_extractor()
+        self.skill_normalizer = SkillNormalizer()
         spider.logger.info("SkillExtractionPipeline: NLP SkillExtractor ready")
+
+    def close_spider(self, spider):
+        # Flush unmapped skills frequency report at end of crawl
+        log_path = self.skill_normalizer.flush_unmapped_log(threshold=1)
+        if log_path:
+            spider.logger.info(f"SkillExtractionPipeline: unmapped skills report → {log_path}")
 
     def process_item(self, item, spider):
         adapter = ItemAdapter(item)
@@ -59,15 +67,14 @@ class SkillExtractionPipeline:
         if isinstance(existing_tags, str):
             existing_tags = [s.strip() for s in existing_tags.split(",") if s.strip()]
 
-        # Union: giữ tag gốc, thêm skill NLP chưa có (so sánh case-insensitive)
-        existing_lower = {s.lower() for s in existing_tags}
-        new_skills = [s for s in nlp_skills if s.lower() not in existing_lower]
+        # Combine all skills then normalize + deduplicate
+        all_skills = existing_tags + nlp_skills
+        normalized = self.skill_normalizer.normalize_list(all_skills)
 
-        if new_skills:
-            merged = existing_tags + new_skills
-            adapter["skills_tags"] = merged
-            logger.debug(f"SkillExtractionPipeline: +{len(new_skills)} NLP skills "
-                         f"for '{adapter.get('title')}': {new_skills}")
+        if normalized:
+            adapter["skills_tags"] = normalized
+            logger.debug(f"SkillExtractionPipeline: {len(normalized)} normalized skills "
+                         f"for '{adapter.get('title')}'")
 
         # --- Merge domains vào extra_data['domains'] ---
         if nlp_domains:
