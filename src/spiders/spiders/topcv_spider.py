@@ -60,6 +60,10 @@ class TopcvSpider(BaseJobSpider):
         self.should_stop = False             # set True to stop pagination
         self.vip_skipped_count = 0           # VIP/promoted jobs skipped due to old date
 
+        # Sequential page processing: finish all detail pages before next search page
+        self._pending_details   = 0
+        self._next_page_request = None
+
     def _init_db(self):
         """Load T = max(posted_date) từ DB, lọc theo source của spider này."""
         if self._max_date is not None:
@@ -183,11 +187,16 @@ class TopcvSpider(BaseJobSpider):
         self.logger.info(f"Found {len(job_items)} job items on page {page}")
 
         stop_pagination = False
+        followed_count = 0
+        skipped_date_count = 0
+        skipped_url_count = 0
+        detail_requests = []
 
         for job_item in job_items:
             # Extract job URL
             title_link = job_item.css('h3.title a::attr(href)').get()
             if not title_link:
+                skipped_url_count += 1
                 continue
 
             job_url = urljoin(self.base_url, title_link)
@@ -202,9 +211,6 @@ class TopcvSpider(BaseJobSpider):
             self.seen_jobs.add(job_url)
 
             # --- Detect VIP/promoted: class có thêm bg-* ngoài các class chuẩn ---
-            # Normal: "job-item-search-result job-ta"
-            # VIP:    "job-item-search-result bg-yellow job-ta"
-            #         "job-item-search-result bg-highlight job-ta", etc.
             item_class = job_item.attrib.get('class', '')
             is_vip = bool(re.search(r'\bbg-\w+', item_class))
 
@@ -212,6 +218,7 @@ class TopcvSpider(BaseJobSpider):
             date_posted_raw = job_item.xpath(
                 'normalize-space(.//label[contains(@class,"label-update")]/text()[normalize-space()])'
             ).get() or ''
+            title_text = self.safe_extract_text(job_item, 'h3.title a::text')
 
             posted_date = None
             if date_posted_raw:
@@ -220,18 +227,14 @@ class TopcvSpider(BaseJobSpider):
                     posted_date = datetime.strptime(parsed_str, '%Y-%m-%d').date()
 
             if is_vip:
-                # ---------- VIP JOB: T-based cutoff_follow, không dừng pagination ----------
                 if posted_date and cutoff_follow and posted_date < cutoff_follow:
                     self.vip_skipped_count += 1
-                    self.logger.debug(
-                        f"VIP job too old ({posted_date} < T-{self.DATE_FOLLOW_DAYS}d={cutoff_follow}), "
-                        f"skipping (total skipped: {self.vip_skipped_count}): {job_url}"
+                    skipped_date_count += 1
+                    self.logger.info(
+                        f"SKIP (VIP date filter): '{title_text}' — posted {posted_date} < cutoff {cutoff_follow}"
                     )
-                    continue   # skip card, never stops pagination
-                # VIP + đủ mới (hoặc không parse được date, hoặc full crawl mode) → fall through
-
+                    continue
             else:
-                # ---------- NORMAL JOB: T-based date filter (bỏ qua nếu full crawl mode) ----------
                 if posted_date:
                     if cutoff_stop and posted_date < cutoff_stop:
                         self.logger.info(
@@ -241,12 +244,14 @@ class TopcvSpider(BaseJobSpider):
                         break
 
                     if cutoff_follow and posted_date < cutoff_follow:
-                        self.logger.debug(f"Skipping (date {posted_date} < cutoff {cutoff_follow}): {job_url}")
+                        skipped_date_count += 1
+                        self.logger.info(f"SKIP (date filter): '{title_text}' — posted {posted_date} < cutoff {cutoff_follow}")
                         continue
 
             # Extract basic info from search page
+            followed_count += 1
             basic_info = {
-                'title': self.safe_extract_text(job_item, 'h3.title a::text'),
+                'title': title_text,
                 'company': self.safe_extract_text(job_item, 'a.company .company-name::text'),
                 'company_url': urljoin(self.base_url, job_item.css('a.company::attr(href)').get() or ''),
                 'salary_list': self.safe_extract_text(job_item, 'label.title-salary::text'),
@@ -260,27 +265,48 @@ class TopcvSpider(BaseJobSpider):
 
             # Brand pages need extra wait for JS-rendered content
             is_brand = '/brand/' in job_url
-            yield self.make_request(
+            detail_requests.append(self.make_request(
                 url=job_url,
                 callback=self.parse_job_detail,
                 meta={'basic_info': basic_info, 'playwright_context': self._playwright_ctx},
                 wait_for_selector='.premium-job-description__box--content, .box-info .content-tab' if is_brand else None,
                 page_timeout=60000,
-            )
+            ))
 
-        # --- Auto-paginate ---
+        self.logger.info(
+            f"Page {page} summary: {followed_count} followed, "
+            f"{skipped_date_count} skipped (date), {skipped_url_count} skipped (no URL), "
+            f"total={followed_count + skipped_date_count + skipped_url_count}/{len(job_items)}"
+        )
+
+        # --- Prepare next page request (triggered after all details finish) ---
+        self._next_page_request = None
         if not stop_pagination and not self.should_stop:
             next_page = page + 1
             next_url = self._paginate_url(base_search_url, next_page)
-            self.logger.info(f"Requesting search page {next_page}: {next_url}")
-            yield self.make_request(
+            self.logger.info(f"Requesting search page {next_page}: {next_url} (after {len(detail_requests)} detail pages)")
+            self._next_page_request = self.make_request(
                 url=next_url,
                 callback=self.parse,
                 meta={'page': next_page, 'base_search_url': base_search_url, 'playwright_context': self._playwright_ctx},
                 page_timeout=60000,
             )
+        elif stop_pagination or self.should_stop:
+            # Current URL finished — prepare next URL in queue
+            next_url_requests = list(self._start_next_url())
+            if next_url_requests:
+                self._next_page_request = next_url_requests[0]
+
+        # --- Yield detail requests; next page triggered when all finish ---
+        if detail_requests:
+            self._pending_details = len(detail_requests)
+            for req in detail_requests:
+                yield req
+        elif self._next_page_request:
+            # No detail requests on this page → go to next page immediately
+            yield self._next_page_request
+            self._next_page_request = None
         else:
-            # Current URL finished — start next URL in queue (sequential mode)
             yield from self._start_next_url()
     
     def _start_next_url(self):
@@ -481,6 +507,13 @@ class TopcvSpider(BaseJobSpider):
 
         self.jobs_scraped += 1
         yield item
+
+        # --- Sequential page processing: countdown and trigger next page ---
+        self._pending_details -= 1
+        if self._pending_details <= 0 and self._next_page_request:
+            self.logger.info("All detail pages done → requesting next search page")
+            yield self._next_page_request
+            self._next_page_request = None
 
     def closed(self, reason):
         """Override to include premium-job stats in the final summary."""

@@ -53,6 +53,14 @@ DOWNLOAD_DELAY = 2
 CONCURRENT_REQUESTS_PER_DOMAIN = 1
 #CONCURRENT_REQUESTS_PER_IP = 16
 
+# ── FIFO scheduling (breadth-first) ──
+# Scrapy mặc định dùng LIFO (stack → depth-first), khiến request yield SAU
+# lại được xử lý TRƯỚC. Chuyển sang FIFO (queue → breadth-first) để detail
+# pages được xử lý đúng thứ tự xuất hiện trên trang listing.
+DEPTH_PRIORITY = 1  # request yield trước → priority cao hơn
+SCHEDULER_DISK_QUEUE = "scrapy.squeues.PickleFifoDiskQueue"
+SCHEDULER_MEMORY_QUEUE = "scrapy.squeues.FifoMemoryQueue"
+
 # Disable cookies (enabled by default)
 COOKIES_ENABLED = True
 # Disable Telnet Console (enabled by default)
@@ -181,6 +189,22 @@ from datetime import datetime
 LOG_FILE = f"logs/scrapy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 LOG_FILE_APPEND = False  # Create new log file each run
 LOG_ENCODING = "utf-8"
+
+# ── Suppress Scrapy's verbose "Dropped:" item dump ──
+# When DropItem is raised, Scrapy logs the ENTIRE item dict as WARNING.
+# Our pipeline already logs a concise DUPLICATE FOUND / Batch duplicate INFO line,
+# so the full item dump is redundant and bloats the log file.
+import logging
+
+class _DropItemLogFilter(logging.Filter):
+    """Filter out 'Dropped:' WARNING messages from scrapy.core.scraper."""
+    def filter(self, record):
+        if record.levelno == logging.WARNING and isinstance(record.msg, str):
+            return not record.msg.startswith("Dropped:")
+        return True
+
+# Attach filter at import time so it's active before any spider runs
+logging.getLogger("scrapy.core.scraper").addFilter(_DropItemLogFilter())
 
 # Custom settings for output
 OUTPUT_DIR = "data"  # Changed from "data/output" to "data"
