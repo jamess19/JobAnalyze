@@ -61,7 +61,6 @@ SKILL_CATEGORY_MAP: dict[str, str] = {
     "CSS3": "FRONTEND - HTML/CSS/JS BASICS",
     "SASS": "FRONTEND - HTML/CSS/JS BASICS",
     "SCSS": "FRONTEND - HTML/CSS/JS BASICS",
-    "LESS": "FRONTEND - HTML/CSS/JS BASICS",
     "Bootstrap": "FRONTEND - HTML/CSS/JS BASICS",
     "Tailwind CSS": "FRONTEND - HTML/CSS/JS BASICS",
     "Foundation": "FRONTEND - HTML/CSS/JS BASICS",
@@ -652,7 +651,6 @@ SKILL_CATEGORY_MAP: dict[str, str] = {
     "SOC": "SECURITY",
     "SOC 2": "SECURITY",
     "Vulnerability": "SECURITY",
-    "Compliance": "SECURITY",
     "GDPR": "SECURITY",
     "PCI DSS": "SECURITY",
     "HIPAA": "SECURITY",
@@ -704,7 +702,7 @@ def _build_synonym_map() -> dict[str, str]:
         "html 5": "HTML5", "html5": "HTML5",
         "css 3": "CSS3", "css3": "CSS3",
         "tailwind": "Tailwind CSS", "tailwindcss": "Tailwind CSS", "tailwind css": "Tailwind CSS",
-        "bootstrap": "Bootstrap", "sass": "SASS", "scss": "SCSS", "less": "LESS",
+        "bootstrap": "Bootstrap", "sass": "SASS", "scss": "SCSS",
 
         # --- Frontend Frameworks ---
         "reactjs": "React", "react.js": "React",
@@ -1089,7 +1087,6 @@ def _build_synonym_map() -> dict[str, str]:
         "access control": "Access Control",
         "siem": "SIEM", "soc": "SOC", "soc2": "SOC 2", "soc 2": "SOC 2",
         "vulnerability": "Vulnerability",
-        "compliance": "Compliance",
         "gdpr": "GDPR", "pci dss": "PCI DSS",
         "hipaa": "HIPAA", "iso 27001": "ISO 27001",
         "burp suite": "Burp Suite",

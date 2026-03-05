@@ -23,6 +23,10 @@ class TopcvSpider(BaseJobSpider):
     # Anti-429 features
     rotate_user_agent = True      # RotatingUserAgentMiddleware
     rate_limit_backoff = True     # RateLimitBackoffMiddleware
+
+    # When consecutive duplicate limit is reached, only stop the current URL
+    # and move to the next one instead of closing the entire spider.
+    per_keyword_stop = True
     referer_base = "https://www.topcv.vn/"
 
     # Smart crawl settings

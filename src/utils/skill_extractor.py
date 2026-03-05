@@ -108,7 +108,6 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "css"}, {"TEXT": "3"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "sass"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "scss"}]},
-            {"label": "SKILL", "pattern": [{"LOWER": "less"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "stylus"}]},
             
             # ============================================================
@@ -975,7 +974,6 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "vulnerability"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "threat"}, {"LOWER": "modeling"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "security"}, {"LOWER": "audit"}]},
-            {"label": "SKILL", "pattern": [{"LOWER": "compliance"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "gdpr"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "pci"}, {"LOWER": "dss"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "hipaa"}]},
