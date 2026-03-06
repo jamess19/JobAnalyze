@@ -1,0 +1,34 @@
+name: Deploy to DigitalOcean Droplet
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to DigitalOcean via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USERNAME }}
+          password: ${{ secrets.DO_PASSWORD }}
+          script: |
+            cd /opt/JobAnalyze || exit
+            # Pull code mới nhất
+            git pull origin main
+            
+            # Khởi động lại các container (nếu cần build lại image script)
+            docker compose -f docker-compose.yml build scraper
+            
+            # Restart timescaledb nếu có thay đổi config, hoặc các service khác
+            docker compose -f docker-compose.yml up -d timescaledb
+            
+            # Nếu chạy cùng airflow trong docker-compose:
+            # docker compose -f docker-compose.airflow.yml up -d

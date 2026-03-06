@@ -32,18 +32,22 @@ class ItviecSpider(BaseJobSpider):
     DATE_FOLLOW_DAYS    = 2    # follow detail page only if posted_date >= T - N days
     DATE_STOP_DAYS      = 3    # stop pagination if posted_date < T - N days
 
-    def __init__(self, start_url: str = None, *args, **kwargs):
+    def __init__(self, *args, start_url: str = None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.base_url = "https://itviec.com"
-        self.start_url = start_url  # Direct URL to crawl (overrides keyword/location)
+        self.base_url     = 'https://itviec.com'
+        self.start_url    = start_url or 'https://itviec.com/it-jobs'
+        self._max_date    = None          # T = max(posted_date) from DB, set in start_requests()
 
-        # Smart crawl state
-        self._max_date: date | None = None   # T = max(posted_date) from DB
+        # Dedup/stop counters – manipulated by DeduplicationPipeline
         self.consecutive_dup_count = 0       # updated by DeduplicationPipeline
-        self.should_stop = False             # set True to stop pagination
+        self.should_stop           = False             # set True to stop pagination
 
+        # Sequential page processing: finish all detail pages before next search page
+        self._pending_details     = 0
+        self._next_page_request   = None
+    
     def _init_db(self):
-        """Load T = max(posted_date) from DB."""
+        """Load T = max(posted_date) từ DB, lọc theo source của spider này."""
         if self._max_date is not None:
             return
         from models.base import get_engine, get_session_factory
@@ -51,12 +55,14 @@ class ItviecSpider(BaseJobSpider):
         engine = get_engine(self.settings.get("DATABASE_URL"))
         session_factory = get_session_factory(engine)
         repo = JobRepository(session_factory)
-        max_date = repo.get_max_posted_date()
+        source = self.name.replace("_spider", "")  # 'itviec'
+        max_date = repo.get_max_posted_date(source=source)
         if max_date:
             self._max_date = max_date.date() if hasattr(max_date, 'date') else max_date
+            self.logger.info(f"Smart crawl [{source}]: T = {self._max_date} (DATE_FOLLOW >= T-{self.DATE_FOLLOW_DAYS}d, DATE_STOP < T-{self.DATE_STOP_DAYS}d, MAX_DUP={self.MAX_CONSECUTIVE_DUPS})")
         else:
-            self._max_date = datetime.now().date()
-        self.logger.info(f"Smart crawl: T = {self._max_date} (DATE_FOLLOW >= T-{self.DATE_FOLLOW_DAYS}d, DATE_STOP < T-{self.DATE_STOP_DAYS}d, MAX_DUP={self.MAX_CONSECUTIVE_DUPS})")
+            self._max_date = None  # Chưa có job từ source này → crawl toàn bộ
+            self.logger.info(f"Smart crawl [{source}]: No existing data → full crawl mode (no date filter)")
     
     def normalize_search_params(self) -> tuple:
         """Normalize keyword and location for URL"""
@@ -155,8 +161,9 @@ class ItviecSpider(BaseJobSpider):
         base_search_url = response.meta.get('base_search_url', '')
         self.logger.info(f"Parsing search page {page}: {response.url}")
 
-        cutoff_follow = self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)
-        cutoff_stop   = self._max_date - timedelta(days=self.DATE_STOP_DAYS)
+        # Nếu _max_date là None (chưa có data source này) → crawl toàn bộ, không lọc date
+        cutoff_follow = (self._max_date - timedelta(days=self.DATE_FOLLOW_DAYS)) if self._max_date else None
+        cutoff_stop   = (self._max_date - timedelta(days=self.DATE_STOP_DAYS))   if self._max_date else None
 
         job_items = response.css('div[data-controller="search--job-selection"]')
         if not job_items:
@@ -166,12 +173,19 @@ class ItviecSpider(BaseJobSpider):
         self.logger.info(f"Found {len(job_items)} job items on page {page}")
 
         stop_pagination = False
+        followed_count = 0
+        skipped_date_count = 0
+        skipped_no_url_count = 0
+        detail_requests = []
 
         for job_item in job_items:
             # --- Title & URL ---
             title_elem = job_item.css('h3[data-search--job-selection-target="jobTitle"]')
+            title_text = title_elem.css('::text').get('').strip() if title_elem else ''
             job_url    = title_elem.attrib.get('data-url') if title_elem else None
             if not job_url:
+                skipped_no_url_count += 1
+                self.logger.info(f"SKIP (no URL): '{title_text}' — CSS selector không tìm thấy data-url")
                 continue
 
             absolute_url = urljoin(self.base_url, job_url)
@@ -195,24 +209,26 @@ class ItviecSpider(BaseJobSpider):
                 posted_date_str = self.parse_relative_date(date_raw.strip())
                 posted_date = datetime.strptime(posted_date_str, '%Y-%m-%d').date()
 
-                # Quá cũ → dừng toàn bộ pagination
-                if posted_date < cutoff_stop:
+                # Quá cũ → dừng toàn bộ pagination (chỉ áp dụng khi có T)
+                if cutoff_stop and posted_date < cutoff_stop:
                     self.logger.info(
                         f"Job too old ({posted_date} < T-{self.DATE_STOP_DAYS}d={cutoff_stop}), stopping pagination."
                     )
                     stop_pagination = True
                     break
 
-                # Không đủ recent → skip card này, tiếp tục
-                if posted_date < cutoff_follow:
-                    self.logger.debug(f"Skipping (date {posted_date} < cutoff {cutoff_follow}): {absolute_url}")
+                # Không đủ recent → skip card này, tiếp tục (chỉ áp dụng khi có T)
+                if cutoff_follow and posted_date < cutoff_follow:
+                    skipped_date_count += 1
+                    self.logger.info(f"SKIP (date filter): '{title_text}' — posted {posted_date} < cutoff {cutoff_follow}")
                     continue
 
             # --- Vượt qua date filter → request detail page ---
             # DeduplicationPipeline sẽ check LSH + Jaccard và cập nhật
             # spider.consecutive_dup_count / spider.should_stop
+            followed_count += 1
             basic_info = {
-                'title':    title_elem.css('::text').get('').strip(),
+                'title':    title_text,
                 'company':  job_item.css('a.text-rich-grey::text').get(),
                 'location': job_item.css('div.text-rich-grey[title]::attr(title)').get(),
             }
@@ -224,29 +240,46 @@ class ItviecSpider(BaseJobSpider):
                 basic_info['skills'] = [s.strip() for s in skill_tags if s.strip()]
 
             self.logger.debug(f"Following job URL: {absolute_url}")
-            yield self.make_request(
+            detail_requests.append(self.make_request(
                 url=absolute_url,
                 callback=self.parse_job_detail,
                 meta={'basic_info': basic_info},
-            )
+            ))
 
-        # --- Auto-paginate ---
+        self.logger.info(
+            f"Page {page} summary: {followed_count} followed, "
+            f"{skipped_date_count} skipped (date), {skipped_no_url_count} skipped (no URL), "
+            f"total={followed_count + skipped_date_count + skipped_no_url_count}/{len(job_items)}"
+        )
+
+        # --- Prepare next page request (will be triggered after all details finish) ---
+        self._next_page_request = None
         if not stop_pagination and not self.should_stop:
             next_page = page + 1
             next_url = self._paginate_url(base_search_url, next_page)
-            self.logger.info(f"Requesting search page {next_page}: {next_url}")
-            yield self.make_request(
+            self.logger.info(f"Requesting search page {next_page}: {next_url} (after {len(detail_requests)} detail pages)")
+            self._next_page_request = self.make_request(
                 url=next_url,
                 callback=self.parse,
                 meta={'page': next_page, 'base_search_url': base_search_url},
             )
+
+        # --- Yield detail requests sequentially ---
+        if detail_requests:
+            self._pending_details = len(detail_requests)
+            for req in detail_requests:
+                yield req
+        elif self._next_page_request:
+            # No detail requests on this page (all skipped) → go to next page immediately
+            yield self._next_page_request
+            self._next_page_request = None
     
     def parse_job_detail(self, response):
         """
         Parse job detail page
         Chỉ lấy các field có trong JobItem schema
         """
-        self.logger.info(f"Parsing job detail: {response.url}")
+        self.logger.info(f"Parsing job detail ({self._pending_details} remaining): {response.url}")
 
         # Get basic_info from search page (fallback if needed)
         basic_info = response.meta.get('basic_info', {})
@@ -401,6 +434,15 @@ class ItviecSpider(BaseJobSpider):
 
         self.jobs_scraped += 1
         yield item
+
+        # --- Sequential page processing: countdown and trigger next page ---
+        self._pending_details -= 1
+        if self._pending_details <= 0 and self._next_page_request:
+            self.logger.info(
+                f"All detail pages done → requesting next search page"
+            )
+            yield self._next_page_request
+            self._next_page_request = None
 
     def parse_company(self, response, item: JobItem = None):
         """

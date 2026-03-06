@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 import hashlib
 import random
 import uuid
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from scrapy_playwright.page import PageMethod
 from spiders.items import JobItem
 from utils.field_extractor import FieldExtractor
@@ -76,6 +77,44 @@ class BaseJobSpider(scrapy.Spider):
         item["date_posted"] = self.crawl_date
         return item
 
+    # ── Tracking parameters to strip from job URLs ──
+    # LinkedIn: trackingId, refId, trk, currentJobId, position, pageNum, origin, originalSubdomain
+    # General: utm_*, fbclid
+    _TRACKING_PARAMS = {
+        'trackingid', 'refid', 'trk', 'currentjobid',
+        'position', 'pagenum', 'origin', 'originalsubdomain',
+        'fbclid',
+    }
+    _TRACKING_PREFIXES = ('utm_',)
+
+    @staticmethod
+    def normalize_job_url(url: str) -> str:
+        """
+        Normalize a job URL by stripping tracking / session query parameters.
+        
+        This ensures the same job posting — even with different tracking IDs
+        appended by LinkedIn, Facebook, etc. — produces the same UUID v5.
+        
+        :param url: Raw job URL (may contain tracking params)
+        :return: Cleaned URL with tracking params removed
+        """
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+
+        # Filter out tracking params (case-insensitive key check)
+        clean_params = {}
+        for key, values in params.items():
+            key_lower = key.lower()
+            if key_lower in BaseJobSpider._TRACKING_PARAMS:
+                continue
+            if any(key_lower.startswith(p) for p in BaseJobSpider._TRACKING_PREFIXES):
+                continue
+            clean_params[key] = values[0]  # keep first value only
+
+        # Rebuild URL; drop query string entirely if no params remain
+        new_query = urlencode(clean_params) if clean_params else ''
+        return urlunparse(parsed._replace(query=new_query, fragment=''))
+
     def generate_job_id(self, job_url: str, source: str = None) -> str:
         """
         Generate unique UUID v5 from URL
@@ -93,13 +132,18 @@ class BaseJobSpider(scrapy.Spider):
 
     def populate_metadata(self, item: JobItem, job_url: str) -> JobItem:
         """
-        Populate metadata fields in item
+        Populate metadata fields in item.
+        Normalizes the URL (strips tracking params) before generating job_id.
+        
         :param item: JobItem to populate
-        :param job_url: Job URL
+        :param job_url: Job URL (raw, may contain tracking params)
         :return: Updated JobItem
         """
-        item["job_url"] = job_url
-        item["job_id"] = self.generate_job_id(job_url)
+        # Normalize URL to strip tracking parameters before ID generation
+        clean_url = self.normalize_job_url(job_url)
+        
+        item["job_url"] = clean_url
+        item["job_id"] = self.generate_job_id(clean_url)
         item["crawl_date"] = self.crawl_date
         item["source"] = self.name.replace("_spider", "")
 

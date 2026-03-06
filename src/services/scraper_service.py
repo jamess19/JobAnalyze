@@ -29,19 +29,20 @@ class ScraperService:
                 continue
 
             if config.get("urls"):
-                # URL-based crawl: one instance per URL
-                for url in config["urls"]:
-                    process.crawl(spider_class, start_url=url)
-            else:
-                # Legacy keyword-based crawl (LinkedIn still uses this)
-                for keyword in config.get("keywords", []):
-                    process.crawl(
-                        spider_class,
-                        keyword=keyword,
-                        location=config.get("location", ""),
-                        start_page=config.get("start_page", 1),
-                        end_page=config.get("end_page", 1),
-                    )
+                if spider_name == "topcv":
+                    # TopCV: single instance processes all URLs sequentially
+                    process.crawl(spider_class, start_urls=config["urls"])
+                else:
+                    # Other spiders: one instance per URL (parallel)
+                    for url in config["urls"]:
+                        process.crawl(spider_class, start_url=url)
+            elif config.get("keywords"):
+                # Keyword-based crawl: ONE spider instance handles all keywords sequentially
+                process.crawl(
+                    spider_class,
+                    keywords=config["keywords"],
+                    location=config.get("location", ""),
+                )
 
         process.start()
 

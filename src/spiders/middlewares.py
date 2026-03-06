@@ -4,6 +4,7 @@
 # https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
 import random
+import logging
 from scrapy import signals
 from itemadapter import ItemAdapter
 
@@ -51,15 +52,39 @@ class RotatingUserAgentMiddleware:
 # ---------------------------------------------------------------------------
 class RateLimitBackoffMiddleware:
     """
-    When a 429 is received, wait with exponential backoff then retry.
-    Uses Twisted callLater — does NOT block the reactor.
-    Backoff schedule: 60s, 120s, 240s, 480s, 600s (max 5 retries).
-    Only active for spiders that set `rate_limit_backoff = True`.
+    Handles 429 responses and DNS failures (ERR_NAME_NOT_RESOLVED) with
+    exponential backoff + jitter.  Only active for spiders that set
+    `rate_limit_backoff = True`.
+
+    Backoff schedule (BASE_WAIT=90s, jitter ±25%):
+      retry 1 → ~90s,  retry 2 → ~180s,  retry 3 → ~360s,
+      retry 4 → ~600s,  retry 5 → ~600s  (capped)
     """
 
     MAX_RETRIES = 5
-    BASE_WAIT   = 60   # seconds
-    MAX_WAIT    = 600  # seconds cap
+    BASE_WAIT   = 90    # seconds (was 60)
+    MAX_WAIT    = 600   # seconds cap
+    JITTER      = 0.25  # ±25% random jitter
+
+    def _schedule_retry(self, request, retry_count, reason, spider):
+        """Compute wait with jitter and schedule retry via Twisted."""
+        from twisted.internet import defer, reactor
+
+        base = min(self.BASE_WAIT * (2 ** retry_count), self.MAX_WAIT)
+        jitter = base * self.JITTER * (2 * random.random() - 1)  # ±JITTER
+        wait = max(30, round(base + jitter))
+
+        spider.logger.warning(
+            f"{reason} → backing off {wait}s (retry {retry_count + 1}/{self.MAX_RETRIES}): {request.url}"
+        )
+
+        new_req = request.copy()
+        new_req.meta['_rl_retry'] = retry_count + 1
+        new_req.dont_filter = True
+
+        d = defer.Deferred()
+        reactor.callLater(wait, d.callback, new_req)
+        return d
 
     def process_response(self, request, response, spider):
         if response.status != 429:
@@ -74,19 +99,35 @@ class RateLimitBackoffMiddleware:
             )
             return response
 
-        wait = min(self.BASE_WAIT * (2 ** retry_count), self.MAX_WAIT)
-        spider.logger.warning(
-            f"429 rate limited → backing off {wait}s (retry {retry_count + 1}/{self.MAX_RETRIES}): {request.url}"
+        return self._schedule_retry(request, retry_count, "429 rate limited", spider)
+
+    def process_exception(self, request, exception, spider):
+        """Retry on DNS resolution failures caused by temporary IP blocks."""
+        if not getattr(spider, 'rate_limit_backoff', False):
+            return None
+
+        exc_str = str(exception)
+        dns_errors = (
+            'ERR_NAME_NOT_RESOLVED',
+            'NAME_NOT_RESOLVED',
+            'ConnectionRefusedError',
+            'TCPTimedOutError',
         )
+        if not any(e in exc_str for e in dns_errors):
+            return None
 
-        from twisted.internet import defer, reactor
-        new_req = request.copy()
-        new_req.meta['_rl_retry'] = retry_count + 1
-        new_req.dont_filter = True
+        retry_count = request.meta.get('_rl_retry', 0)
+        if retry_count >= self.MAX_RETRIES:
+            spider.logger.error(
+                f"DNS/connection failure after {self.MAX_RETRIES} retries, giving up: {request.url}"
+            )
+            return None
 
-        d = defer.Deferred()
-        reactor.callLater(wait, d.callback, new_req)
-        return d
+        return self._schedule_retry(
+            request, retry_count,
+            f"DNS/connection failure ({exc_str[:60]})",
+            spider
+        )
 
 
 # ---------------------------------------------------------------------------
