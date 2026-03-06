@@ -2,6 +2,11 @@ from datetime import datetime
 from airflow import DAG
 from airflow.providers.docker.operators.docker import DockerOperator
 from docker.types import Mount
+import os
+from dotenv import load_dotenv
+
+# Tải file .env từ thư mục gốc của Airflow
+load_dotenv('/opt/airflow/.env')
 
 default_args = {
     'owner': 'airflow',
@@ -34,9 +39,8 @@ with DAG(
             Mount(source='/opt/JobAnalyze/logs', target='/app/logs', type='bind')
         ],
         environment={
-            'DATABASE_URL': '{{ var.value.get("DATABASE_URL", "postgresql://postgres:password@localhost:5433/job_market") }}'
+            'DATABASE_URL': os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5433/job_market")
         },
-        env_file='/opt/airflow/.env',
     )
 
     run_all_job_spiders
