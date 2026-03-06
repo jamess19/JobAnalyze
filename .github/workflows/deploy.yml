@@ -24,11 +24,11 @@ jobs:
             # Pull code mới nhất
             git pull origin main
             
-            # Khởi động lại các container (nếu cần build lại image script)
-            docker compose -f docker-compose.yml build scraper
+            # Build lại image Scraper nếu có thay đổi code liên quan spider/script
+            docker build -t jobanalyze_scraper:latest .
             
-            # Restart timescaledb nếu có thay đổi config, hoặc các service khác
-            docker compose -f docker-compose.yml up -d timescaledb
+            # Khởi động lại các container Airflow
+            docker compose -f docker-compose.airflow.yml up -d
             
             # Nếu chạy cùng airflow trong docker-compose:
             # docker compose -f docker-compose.airflow.yml up -d
