@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml requirements.txt ./
 COPY src/ src/
-RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -e . && python -m spacy download en_core_web_sm
 RUN playwright install chromium --with-deps
 
 CMD ["python", "-m", "main"]
