@@ -26,26 +26,40 @@ with DAG(
     max_active_runs=1,
 ) as dag:
     
-    run_all_job_spiders = DockerOperator(
-        task_id='run_all_job_spiders',
-        image='jobanalyze_scraper:latest',
-        api_version='auto',
-        auto_remove='force',
-        command='python -m main --spider all',
-        docker_url='unix://var/run/docker.sock',
-        network_mode='host',
-        mount_tmp_dir=False,
-        mounts=[
+    common_docker_args = {
+        'image': 'jobanalyze_scraper:latest',
+        'api_version': 'auto',
+        'auto_remove': 'force',
+        'docker_url': 'unix://var/run/docker.sock',
+        'network_mode': 'host',
+        'mount_tmp_dir': False,
+        'mounts': [
             Mount(source='/opt/JobAnalyze/src/data', target='/app/src/data', type='bind'),
             Mount(source='/opt/JobAnalyze/logs', target='/app/logs', type='bind'),
-            # Mount credentials folder for Google Drive Authentication
             Mount(source='/opt/JobAnalyze/src/config/credentials', target='/app/src/config/credentials', type='bind'),
-            # Mount token file if it exists on host
             Mount(source='/opt/JobAnalyze/token.json', target='/app/token.json', type='bind')
         ],
-        environment={
+        'environment': {
             'DATABASE_URL': os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5433/job_market")
         },
+    }
+
+    run_itviec_spider = DockerOperator(
+        task_id='run_itviec_spider',
+        command='python -m main --spider itviec',
+        **common_docker_args
     )
 
-    run_all_job_spiders
+    run_topcv_spider = DockerOperator(
+        task_id='run_topcv_spider',
+        command='python -m main --spider topcv',
+        **common_docker_args
+    )
+    
+    run_linkedin_spider = DockerOperator(
+        task_id='run_linkedin_spider',
+        command='python -m main --spider linkedin',
+        **common_docker_args
+    )
+
+    run_itviec_spider >> run_topcv_spider >> run_linkedin_spider
