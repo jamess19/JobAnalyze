@@ -25,7 +25,7 @@ jobs:
             git pull origin main
             
             # Build lại image Scraper nếu có thay đổi code liên quan spider/script
-            docker build -t jobanalyze_scraper:latest .
+            docker build --network=host -t jobanalyze_scraper:latest .
             
             # Khởi động lại các container Airflow
             docker compose -f docker-compose.airflow.yml up -d
