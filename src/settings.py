@@ -228,8 +228,8 @@ SEEN_JOBS_FILE = "data/seen_jobs.txt"
 
 # Memory usage settings
 MEMUSAGE_ENABLED = True
-MEMUSAGE_LIMIT_MB = 512
-MEMUSAGE_WARNING_MB = 256
+MEMUSAGE_LIMIT_MB = 2048
+MEMUSAGE_WARNING_MB = 1024
 
 # Stats collection
 STATS_DUMP = True
