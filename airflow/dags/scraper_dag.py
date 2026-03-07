@@ -34,9 +34,14 @@ with DAG(
         command='python -m main --spider all',
         docker_url='unix://var/run/docker.sock',
         network_mode='host',
+        mount_tmp_dir=False,
         mounts=[
             Mount(source='/opt/JobAnalyze/src/data', target='/app/src/data', type='bind'),
-            Mount(source='/opt/JobAnalyze/logs', target='/app/logs', type='bind')
+            Mount(source='/opt/JobAnalyze/logs', target='/app/logs', type='bind'),
+            # Mount credentials folder for Google Drive Authentication
+            Mount(source='/opt/JobAnalyze/src/config/credentials', target='/app/src/config/credentials', type='bind'),
+            # Mount token file if it exists on host
+            Mount(source='/opt/JobAnalyze/token.json', target='/app/token.json', type='bind')
         ],
         environment={
             'DATABASE_URL': os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5433/job_market")
