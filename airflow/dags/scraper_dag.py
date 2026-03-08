@@ -1,4 +1,5 @@
 from datetime import datetime
+import pendulum
 from airflow import DAG
 from airflow.providers.docker.operators.docker import DockerOperator
 from docker.types import Mount
@@ -11,7 +12,7 @@ load_dotenv('/opt/airflow/.env')
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
-    'start_date': datetime(2023, 1, 1),
+    'start_date': pendulum.datetime(2023, 1, 1, tz="Asia/Ho_Chi_Minh"),
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 0,
