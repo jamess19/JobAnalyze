@@ -20,9 +20,10 @@ class TopcvSpider(BaseJobSpider):
     # Enable Playwright for this spider
     use_playwright = True
 
-    # Anti-429 features
+    # Anti-bot features
     rotate_user_agent = True      # RotatingUserAgentMiddleware
-    rate_limit_backoff = True     # RateLimitBackoffMiddleware
+    rate_limit_backoff = True     # RateLimitBackoffMiddleware (429 + 403)
+    use_proxy = True              # ProxyRotationMiddleware (if proxies.txt exists)
 
     # When consecutive duplicate limit is reached, only stop the current URL
     # and move to the next one instead of closing the entire spider.
@@ -35,16 +36,16 @@ class TopcvSpider(BaseJobSpider):
     DATE_STOP_DAYS      = 3    # stop pagination if posted_date < T - N days
 
     custom_settings = {
-        'DOWNLOAD_DELAY': 10,
+        'DOWNLOAD_DELAY': 15,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
         'CONCURRENT_REQUESTS': 1,
         'AUTOTHROTTLE_ENABLED': True,
-        'AUTOTHROTTLE_START_DELAY': 15,
-        'AUTOTHROTTLE_MAX_DELAY': 90,
-        'AUTOTHROTTLE_TARGET_CONCURRENCY': 0.5,  # more conservative
+        'AUTOTHROTTLE_START_DELAY': 20,
+        'AUTOTHROTTLE_MAX_DELAY': 120,
+        'AUTOTHROTTLE_TARGET_CONCURRENCY': 0.3,  # very conservative to avoid detection
         'RETRY_TIMES': 3,
-        'RETRY_HTTP_CODES': [500, 502, 503, 504],  # 429 handled by RateLimitBackoffMiddleware
+        'RETRY_HTTP_CODES': [500, 502, 503, 504, 403],  # 429/403 also handled by RateLimitBackoffMiddleware
     }
 
     def __init__(self, start_url: str = None, start_urls: list = None, *args, **kwargs):

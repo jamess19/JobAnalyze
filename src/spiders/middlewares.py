@@ -3,10 +3,17 @@
 # See documentation in:
 # https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
+import os
 import random
 import logging
+import time
+from collections import defaultdict
+from urllib.parse import urlparse
+
 from scrapy import signals
 from itemadapter import ItemAdapter
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -48,34 +55,147 @@ class RotatingUserAgentMiddleware:
 
 
 # ---------------------------------------------------------------------------
-# Rate-limit exponential backoff middleware (handles 429)
+# Proxy Rotation Middleware
+# ---------------------------------------------------------------------------
+class ProxyRotationMiddleware:
+    """
+    Rotate proxies from a text file for spiders that set `use_proxy = True`.
+
+    Proxy file format (one per line):
+        http://ip:port
+        https://ip:port
+        http://user:pass@ip:port
+
+    Configure via:
+        - PROXY_LIST_FILE setting or env var PROXY_LIST_FILE
+        - Default: proxies.txt in project root
+
+    If no proxy file exists or is empty, the middleware is silently skipped.
+    """
+
+    def __init__(self, proxy_list):
+        self.proxies = proxy_list
+        self._index = 0
+        self._blacklisted = set()
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        proxy_file = (
+            crawler.settings.get('PROXY_LIST_FILE')
+            or os.getenv('PROXY_LIST_FILE')
+            or os.path.join(base_dir, 'proxies.txt')
+        )
+
+        proxies = []
+        if os.path.isfile(proxy_file):
+            with open(proxy_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        proxies.append(line)
+            if proxies:
+                logger.info(f"ProxyRotationMiddleware: Loaded {len(proxies)} proxies from {proxy_file}")
+            else:
+                logger.info(f"ProxyRotationMiddleware: Proxy file {proxy_file} is empty, running without proxies")
+        else:
+            logger.info(f"ProxyRotationMiddleware: No proxy file found at {proxy_file}, running without proxies")
+
+        return cls(proxies)
+
+    def _get_next_proxy(self):
+        """Get the next non-blacklisted proxy (round-robin)."""
+        if not self.proxies:
+            return None
+
+        available = [p for p in self.proxies if p not in self._blacklisted]
+        if not available:
+            # All proxies blacklisted → reset and try again
+            logger.warning("ProxyRotationMiddleware: All proxies blacklisted, resetting blacklist")
+            self._blacklisted.clear()
+            available = self.proxies
+
+        self._index = self._index % len(available)
+        proxy = available[self._index]
+        self._index += 1
+        return proxy
+
+    def process_request(self, request, spider):
+        if not getattr(spider, 'use_proxy', False):
+            return None
+        if not self.proxies:
+            return None
+
+        proxy = self._get_next_proxy()
+        if proxy:
+            request.meta['proxy'] = proxy
+            spider.logger.debug(f"Using proxy: {proxy} for {request.url}")
+        return None
+
+    def process_response(self, request, response, spider):
+        if response.status == 403 and 'proxy' in request.meta:
+            proxy = request.meta['proxy']
+            self._blacklisted.add(proxy)
+            spider.logger.warning(
+                f"ProxyRotationMiddleware: Blacklisted proxy {proxy} after 403"
+            )
+        return response
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit exponential backoff middleware (handles 429 AND 403)
 # ---------------------------------------------------------------------------
 class RateLimitBackoffMiddleware:
     """
-    Handles 429 responses and DNS failures (ERR_NAME_NOT_RESOLVED) with
-    exponential backoff + jitter.  Only active for spiders that set
+    Handles 429 and 403 responses, plus DNS failures, with exponential
+    backoff + jitter.  Only active for spiders that set
     `rate_limit_backoff = True`.
 
-    Backoff schedule (BASE_WAIT=90s, jitter ±25%):
+    For 429: standard backoff (BASE_WAIT=90s).
+    For 403: aggressive backoff when consecutive 403s are detected.
+
+    Backoff schedule (BASE_WAIT=90s, jitter ±30%):
       retry 1 → ~90s,  retry 2 → ~180s,  retry 3 → ~360s,
       retry 4 → ~600s,  retry 5 → ~600s  (capped)
+
+    403 consecutive pause schedule (BASE_403_WAIT=120s):
+      1-2 consecutive 403s → per-request retry with 120s base
+      3+ consecutive 403s  → long pause 180–600s before retry
     """
 
-    MAX_RETRIES = 5
-    BASE_WAIT   = 90    # seconds (was 60)
-    MAX_WAIT    = 600   # seconds cap
-    JITTER      = 0.25  # ±25% random jitter
+    MAX_RETRIES     = 5
+    BASE_WAIT       = 90     # seconds for 429 backoff
+    BASE_403_WAIT   = 120    # seconds for 403 backoff (longer than 429)
+    MAX_WAIT        = 600    # seconds cap
+    JITTER          = 0.30   # ±30% random jitter
 
-    def _schedule_retry(self, request, retry_count, reason, spider):
+    # After this many consecutive 403s, apply extra-long pause
+    CONSECUTIVE_403_THRESHOLD = 3
+
+    def __init__(self):
+        # Track consecutive 403 counts per domain
+        self._consecutive_403 = defaultdict(int)
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls()
+
+    def _get_domain(self, url):
+        """Extract domain from URL for per-domain tracking."""
+        return urlparse(url).netloc
+
+    def _schedule_retry(self, request, retry_count, reason, spider, base_wait=None):
         """Compute wait with jitter and schedule retry via Twisted."""
         from twisted.internet import defer, reactor
 
-        base = min(self.BASE_WAIT * (2 ** retry_count), self.MAX_WAIT)
+        base_wait = base_wait or self.BASE_WAIT
+        base = min(base_wait * (2 ** retry_count), self.MAX_WAIT)
         jitter = base * self.JITTER * (2 * random.random() - 1)  # ±JITTER
         wait = max(30, round(base + jitter))
 
         spider.logger.warning(
-            f"{reason} → backing off {wait}s (retry {retry_count + 1}/{self.MAX_RETRIES}): {request.url}"
+            f"{reason} → backing off {wait}s "
+            f"(retry {retry_count + 1}/{self.MAX_RETRIES}): {request.url}"
         )
 
         new_req = request.copy()
@@ -87,19 +207,68 @@ class RateLimitBackoffMiddleware:
         return d
 
     def process_response(self, request, response, spider):
-        if response.status != 429:
-            return response
         if not getattr(spider, 'rate_limit_backoff', False):
             return response
 
-        retry_count = request.meta.get('_rl_retry', 0)
-        if retry_count >= self.MAX_RETRIES:
-            spider.logger.error(
-                f"429 after {self.MAX_RETRIES} retries, giving up: {request.url}"
-            )
+        domain = self._get_domain(request.url)
+
+        # ── Handle success: reset 403 counter ──
+        if response.status == 200:
+            if self._consecutive_403[domain] > 0:
+                spider.logger.info(
+                    f"403 streak broken (was {self._consecutive_403[domain]}) "
+                    f"— got 200 for {domain}"
+                )
+                self._consecutive_403[domain] = 0
             return response
 
-        return self._schedule_retry(request, retry_count, "429 rate limited", spider)
+        # ── Handle 429 ──
+        if response.status == 429:
+            retry_count = request.meta.get('_rl_retry', 0)
+            if retry_count >= self.MAX_RETRIES:
+                spider.logger.error(
+                    f"429 after {self.MAX_RETRIES} retries, giving up: {request.url}"
+                )
+                return response
+
+            return self._schedule_retry(
+                request, retry_count, "429 rate limited", spider
+            )
+
+        # ── Handle 403 (anti-bot block) ──
+        if response.status == 403:
+            self._consecutive_403[domain] += 1
+            streak = self._consecutive_403[domain]
+            retry_count = request.meta.get('_rl_retry', 0)
+
+            if retry_count >= self.MAX_RETRIES:
+                spider.logger.error(
+                    f"403 after {self.MAX_RETRIES} retries "
+                    f"(streak={streak}), giving up: {request.url}"
+                )
+                return response
+
+            # Determine base wait time based on consecutive streak
+            if streak >= self.CONSECUTIVE_403_THRESHOLD:
+                # Long pause: scale with streak severity
+                base_wait = min(
+                    self.BASE_403_WAIT * (streak - self.CONSECUTIVE_403_THRESHOLD + 2),
+                    self.MAX_WAIT
+                )
+                spider.logger.warning(
+                    f"🚨 {streak} consecutive 403s on {domain} "
+                    f"— applying extended backoff (base={base_wait}s)"
+                )
+            else:
+                base_wait = self.BASE_403_WAIT
+
+            return self._schedule_retry(
+                request, retry_count,
+                f"403 blocked (streak={streak})",
+                spider, base_wait=base_wait
+            )
+
+        return response
 
     def process_exception(self, request, exception, spider):
         """Retry on DNS resolution failures caused by temporary IP blocks."""
@@ -119,7 +288,8 @@ class RateLimitBackoffMiddleware:
         retry_count = request.meta.get('_rl_retry', 0)
         if retry_count >= self.MAX_RETRIES:
             spider.logger.error(
-                f"DNS/connection failure after {self.MAX_RETRIES} retries, giving up: {request.url}"
+                f"DNS/connection failure after {self.MAX_RETRIES} retries, "
+                f"giving up: {request.url}"
             )
             return None
 
