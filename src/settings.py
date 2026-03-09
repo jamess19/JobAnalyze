@@ -43,12 +43,13 @@ USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
 ROBOTSTXT_OBEY = False  # Set to False for job boards that may block crawlers
 
 # Configure maximum concurrent requests performed by Scrapy (default: 16)
-CONCURRENT_REQUESTS = 2  # Reduced to prevent 100% CPU on 2 vCPUs
+CONCURRENT_REQUESTS = 1  # Single request at a time to avoid anti-bot detection
 
 # Configure a delay for requests for the same website (default: 0)
 # See https://docs.scrapy.org/en/latest/topics/settings.html#download-delay
 # See also autothrottle settings and docs
-DOWNLOAD_DELAY = 2
+DOWNLOAD_DELAY = 5
+RANDOMIZE_DOWNLOAD_DELAY = True  # Random delay between 0.5x and 1.5x DOWNLOAD_DELAY
 # The download delay setting will honor only one of:
 CONCURRENT_REQUESTS_PER_DOMAIN = 1
 #CONCURRENT_REQUESTS_PER_IP = 16
@@ -84,6 +85,7 @@ DEFAULT_REQUEST_HEADERS = {
 # Enable or disable downloader middlewares
 # See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
 DOWNLOADER_MIDDLEWARES = {
+   "spiders.middlewares.ProxyRotationMiddleware": 350,
    "spiders.middlewares.RotatingUserAgentMiddleware": 400,
    "spiders.middlewares.RateLimitBackoffMiddleware": 450,
    "spiders.middlewares.SpidersDownloaderMiddleware": 543,
@@ -113,7 +115,7 @@ AUTOTHROTTLE_ENABLED = True
 # The initial download delay
 AUTOTHROTTLE_START_DELAY = 2
 # The maximum download delay to be set in case of high latencies
-AUTOTHROTTLE_MAX_DELAY = 10
+AUTOTHROTTLE_MAX_DELAY = 120
 # The average number of requests Scrapy should be sending in parallel to
 # each remote server
 AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
@@ -127,7 +129,7 @@ HTTPCACHE_ENABLED = False  # Disabled - no cache files created
 # Retry settings
 RETRY_ENABLED = True
 RETRY_TIMES = 3
-RETRY_HTTP_CODES = [500, 502, 503, 504, 408, 429, 400]
+RETRY_HTTP_CODES = [500, 502, 503, 504, 408, 429, 403, 400]
 RETRY_PRIORITY_ADJUST = -1
 
 # Redirect settings
