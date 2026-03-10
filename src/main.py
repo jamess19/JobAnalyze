@@ -71,6 +71,9 @@ def main() -> int:
     scraper = ScraperService(spider_configs)
     scraper.run()
 
+    # All spiders have finished — write everything to one consolidated file
+    ExportPipeline.export_all(output_dir=output_folder)
+    
     # Step 2: (Optional) Upload latest export to Drive
     export_svc = ExportService(output_folder, config.get("drive_folder_id"))
     csv_files = sorted(
