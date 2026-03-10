@@ -129,6 +129,30 @@ class ProxyRotationMiddleware:
         proxy = self._get_next_proxy()
         if proxy:
             request.meta['proxy'] = proxy
+            
+            # --- Playwright Proxy Support ---
+            if getattr(spider, 'use_playwright', False) or request.meta.get('playwright', False):
+                import urllib.parse
+                parsed = urllib.parse.urlparse(proxy)
+                pw_proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+                if parsed.username:
+                    pw_proxy["username"] = urllib.parse.unquote(parsed.username)
+                if parsed.password:
+                    pw_proxy["password"] = urllib.parse.unquote(parsed.password)
+                
+                ctx_kwargs = request.meta.get('playwright_context_kwargs', {})
+                ctx_kwargs['proxy'] = pw_proxy
+                request.meta['playwright_context_kwargs'] = ctx_kwargs
+
+                # Ensure Playwright context is unique per proxy
+                import hashlib
+                proxy_hash = hashlib.md5(proxy.encode()).hexdigest()[:6]
+                if 'playwright_context' in request.meta:
+                    base_ctx = request.meta['playwright_context'].split('_proxy_')[0]
+                    request.meta['playwright_context'] = f"{base_ctx}_proxy_{proxy_hash}"
+                else:
+                    request.meta['playwright_context'] = f"default_proxy_{proxy_hash}"
+
             spider.logger.debug(f"Using proxy: {proxy} for {request.url}")
         return None
 
@@ -139,6 +163,11 @@ class ProxyRotationMiddleware:
             spider.logger.warning(
                 f"ProxyRotationMiddleware: Blacklisted proxy {proxy} after 403"
             )
+            
+            # If Playwright is used, we might want to close the blocked context
+            if request.meta.get('playwright') and 'playwright_context' in request.meta:
+                spider.logger.warning(f"Note: Playwright context {request.meta['playwright_context']} is now poisoned (403).")
+                
         return response
 
 
