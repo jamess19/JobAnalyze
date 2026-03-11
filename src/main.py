@@ -10,6 +10,7 @@ os.environ.setdefault("SCRAPY_SETTINGS_MODULE", "settings")
 from config.config import DEFAULT_CONFIG
 from services.scraper_service import ScraperService
 from services.export_service import ExportService
+from pipelines.export import ExportPipeline
 
 
 def build_spider_configs(config: dict, spider_filter: str = None) -> list[dict]:
