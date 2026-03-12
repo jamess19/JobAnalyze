@@ -73,17 +73,14 @@ def main() -> int:
     scraper.run()
 
     # All spiders have finished — write everything to one consolidated file
-    ExportPipeline.export_all(output_dir=output_folder)
-    
+    csv_path = ExportPipeline.export_all(output_dir=output_folder)
+
     # Step 2: (Optional) Upload latest export to Drive
-    export_svc = ExportService(output_folder, config.get("drive_folder_id"))
-    csv_files = sorted(
-        [f for f in os.listdir(output_folder) if f.endswith(".csv")],
-        reverse=True,
-    )
-    if csv_files:
-        csv_path = os.path.join(output_folder, csv_files[0])
+    if csv_path and os.path.exists(csv_path):
+        export_svc = ExportService(output_folder, config.get("drive_folder_id"))
         export_svc.upload_to_drive(csv_path)
+    else:
+        print("No new data to upload.")
 
     return 0
 
