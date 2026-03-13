@@ -54,14 +54,15 @@ class ExportPipeline:
         )
 
     @classmethod
-    def export_all(cls, output_dir: str = 'data', timestamp: str = None):
+    def export_all(cls, output_dir: str = 'data', timestamp: str = None) -> str | None:
         """Write all accumulated items to a single set of files.
 
         Call this once after all spiders have completed.
+        Returns the CSV file path, or None if there were no items.
         """
         if not cls._shared_items:
             print("[ExportPipeline] No items to export.")
-            return
+            return None
 
         if timestamp is None:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -105,3 +106,4 @@ class ExportPipeline:
             f"{len(cls._shared_items)} total items → {base_filename}.*"
         )
         cls._shared_items.clear()
+        return csv_path
