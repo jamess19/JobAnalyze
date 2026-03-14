@@ -1,7 +1,6 @@
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 
-from pipelines.export import ExportPipeline
 from spiders.spiders.itviec_spider import ItviecSpider
 from spiders.spiders.topcv_spider import TopcvSpider
 from spiders.spiders.linkedin_spider import LinkedinSpider
@@ -45,6 +44,3 @@ class ScraperService:
                 )
 
         process.start()
-
-        # All spiders have finished — write everything to one consolidated file
-        ExportPipeline.export_all()
