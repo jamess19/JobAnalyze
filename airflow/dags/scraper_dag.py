@@ -35,14 +35,15 @@ with DAG(
         'network_mode': 'host',
         'mount_tmp_dir': False,
         'mounts': [
-            Mount(source='/opt/JobAnalyze/src/data', target='/app/src/data', type='bind'),
+            Mount(source='/opt/JobAnalyze/data', target='/app/data', type='bind'),
             Mount(source='/opt/JobAnalyze/logs', target='/app/logs', type='bind'),
             Mount(source='/opt/JobAnalyze/src/config/credentials', target='/app/src/config/credentials', type='bind'),
             Mount(source='/opt/JobAnalyze/token.json', target='/app/token.json', type='bind'),
             Mount(source='/opt/JobAnalyze/proxies.txt', target='/app/proxies.txt', type='bind'),
         ],
         'environment': {
-            'DATABASE_URL': os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5433/job_market")
+            'DATABASE_URL': os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5433/job_market"),
+            'OUTPUT_FOLDER': '/app/data',
         },
     }
 
