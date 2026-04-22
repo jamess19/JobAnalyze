@@ -319,6 +319,12 @@ SKILL_CATEGORY_MAP: dict[str, str] = {
     "Weaviate": "MACHINE LEARNING & AI",
     "Chroma": "MACHINE LEARNING & AI",
     "Vector Database": "MACHINE LEARNING & AI",
+    "AI": "MACHINE LEARNING & AI",
+    "ML": "MACHINE LEARNING & AI",
+    "Machine Learning": "MACHINE LEARNING & AI",
+    "Deep Learning": "MACHINE LEARNING & AI",
+    "NLP": "MACHINE LEARNING & AI",
+    "Weights & Biases": "MACHINE LEARNING & AI",
 
     # --- CLOUD PLATFORMS ---
     "AWS": "CLOUD PLATFORMS",
@@ -448,6 +454,9 @@ SKILL_CATEGORY_MAP: dict[str, str] = {
     "WebLogic": "OPERATING SYSTEMS & SERVERS",
     "JBoss": "OPERATING SYSTEMS & SERVERS",
     "Gunicorn": "OPERATING SYSTEMS & SERVERS",
+    "VMware": "OPERATING SYSTEMS & SERVERS",
+    "Virtualization": "OPERATING SYSTEMS & SERVERS",
+    "WildFly": "OPERATING SYSTEMS & SERVERS",
 
     # --- VERSION CONTROL & COLLABORATION ---
     "Git": "VERSION CONTROL & COLLABORATION",
@@ -617,6 +626,12 @@ SKILL_CATEGORY_MAP: dict[str, str] = {
     "Cocos": "DESIGN TOOLS",
     "Adobe XD": "DESIGN TOOLS",
     "Principle": "DESIGN TOOLS",
+    "UX": "DESIGN TOOLS",
+    "UI": "DESIGN TOOLS",
+
+    # --- ARCHITECTURE & DESIGN PATTERNS ---
+    "UML": "ARCHITECTURE & DESIGN PATTERNS",
+    "WinForms": "ARCHITECTURE & DESIGN PATTERNS",
 
     # --- SECURITY ---
     "OAuth": "SECURITY",
@@ -1065,6 +1080,11 @@ def _build_synonym_map() -> dict[str, str]:
         "milvus": "Milvus", "pinecone": "Pinecone",
         "weaviate": "Weaviate", "chroma": "Chroma",
         "vector database": "Vector Database",
+        "ai": "AI", "artificial intelligence": "AI",
+        "ml": "ML", "machine learning": "Machine Learning",
+        "deep learning": "Deep Learning",
+        "nlp": "NLP", "natural language processing": "NLP",
+        "wandb": "Weights & Biases", "weights and biases": "Weights & Biases",
 
         # --- Security ---
         "oauth": "OAuth", "oauth2": "OAuth2", "oauth 2.0": "OAuth2",
@@ -1129,6 +1149,23 @@ def _build_synonym_map() -> dict[str, str]:
         # --- New mobile ---
         "native app": "Mobile App",
         "httpd": "Apache",
+
+        # --- New OS/Servers ---
+        "vmware": "VMware", "vsphere": "VMware",
+        "virtualization": "Virtualization",
+        "wildfly": "WildFly",
+
+        # --- New Design ---
+        "ux": "UX", "ui": "UI",
+        "ui-ux": "UI/UX", "ux/ui": "UI/UX",
+
+        # --- New Architecture ---
+        "uml": "UML", "uml/bpmn": "UML",
+        "winforms": "WinForms",
+
+        # --- New Testing ---
+        "unit test": "UnitTest",
+        "usability testing": "Usability Testing",
     }
 
     smap.update(aliases)
@@ -1208,6 +1245,10 @@ class SkillNormalizer:
         """
         Normalize a list of skills, removing duplicates and unknowns.
 
+        For combo skills like "Agile/Scrum" or "AWS/GCP", if the full
+        string has no exact match, split on '/' and normalize each part
+        individually.
+
         :param skills: List of raw skill names
         :return: Deduplicated list of canonical skill names
         """
@@ -1218,6 +1259,15 @@ class SkillNormalizer:
             if canonical and canonical not in seen:
                 seen.add(canonical)
                 result.append(canonical)
+            elif canonical is None and '/' in skill:
+                # Combo split fallback: "Agile/Scrum" → ["Agile", "Scrum"]
+                parts = [p.strip() for p in skill.split('/')]
+                for part in parts:
+                    if part:
+                        c = self.normalize(part)
+                        if c and c not in seen:
+                            seen.add(c)
+                            result.append(c)
         return result
 
     def flush_unmapped_log(self, threshold: int = 1) -> str | None:
