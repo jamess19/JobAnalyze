@@ -26,6 +26,46 @@ class DeduplicationPipeline:
     JACCARD_THRESHOLD = 0.85  # 85% similarity = duplicate candidate (was 0.9)
     REPOST_DAYS_THRESHOLD = 30  # days apart to consider a duplicate as a repost
 
+    # ── Company name normalization ──
+    # Vietnamese legal prefixes (ordered longest-first for greedy matching)
+    _COMPANY_PREFIXES = [
+        'công ty trách nhiệm hữu hạn một thành viên',
+        'công ty trách nhiệm hữu hạn',
+        'tổng công ty cổ phần',
+        'tổng công ty tnhh',
+        'tổng công ty',
+        'công ty tnhh mtv',
+        'công ty tnhh',
+        'công ty cổ phần',
+        'công ty cp',
+        'công ty',
+        'ngân hàng thương mại cổ phần',
+        'ngân hàng tmcp',
+        'ngân hàng',
+        'tập đoàn',
+        'chi nhánh',
+    ]
+    # English legal suffixes (ordered longest-first)
+    _COMPANY_SUFFIXES = [
+        'joint stock company',
+        'company limited',
+        'co., ltd.',
+        'co., ltd',
+        'co.,ltd.',
+        'co.,ltd',
+        'corporation',
+        'company',
+        'corp.',
+        'corp',
+        'inc.',
+        'inc',
+        'llc',
+        'ltd.',
+        'ltd',
+        'jsc',
+        'limited',
+    ]
+
     def __init__(self):
         self.deduplicator = MinHashDeduplicator(num_perm=128, num_bands=16)
         self.stats = {
@@ -251,7 +291,7 @@ class DeduplicationPipeline:
         current_company = ""
         current_location_id = None
         if adapter:
-            current_company = (adapter.get("company_name", "") or "").strip().lower()
+            current_company = self._normalize_company_name(adapter.get("company_name", "") or "")
             # location_id is resolved by DatabasePipeline later, but we can
             # use location_raw for a best-effort comparison.  For now we'll
             # compare against the DB's location_id if available.
@@ -265,7 +305,7 @@ class DeduplicationPipeline:
             
             candidate_signature_array = candidate_data["signature"]
             candidate_posted_date = candidate_data["posted_date"]
-            candidate_company = (candidate_data.get("company_name") or "").strip().lower()
+            candidate_company = self._normalize_company_name(candidate_data.get("company_name") or "")
             candidate_location_id = candidate_data.get("location_id")
             
             # Reconstruct MinHash object from stored signature
@@ -288,7 +328,7 @@ class DeduplicationPipeline:
                 # ── Metadata guard: company_name AND location_id must BOTH match ──
                 # Same JD posted by different company or in different city = different job
                 if current_company and candidate_company:
-                    if current_company != candidate_company:
+                    if not self._companies_match(current_company, candidate_company):
                         self.stats["metadata_mismatch"] += 1
                         spider.logger.info(
                             f"METADATA GUARD: Jaccard={similarity:.4f} >= {self.JACCARD_THRESHOLD} "
@@ -349,6 +389,60 @@ class DeduplicationPipeline:
             f"No duplicates found. Best match: {best_match_id} with {max_similarity:.4f} similarity"
         )
         return False, None, max_similarity
+
+    @classmethod
+    def _normalize_company_name(cls, name: str) -> str:
+        """
+        Normalize company name by stripping Vietnamese legal prefixes
+        and English legal suffixes.
+        
+        Examples:
+            'Công Ty TNHH LG CNS Việt Nam'  → 'lg cns việt nam'
+            'Ngân Hàng TMCP Hàng Hải Việt Nam (MSB)' → 'hàng hải việt nam (msb)'
+            'FPT Software Co., Ltd.'         → 'fpt software'
+        """
+        name = (name or "").strip().lower()
+        if not name:
+            return name
+
+        # Strip Vietnamese legal prefixes
+        for prefix in cls._COMPANY_PREFIXES:
+            if name.startswith(prefix):
+                name = name[len(prefix):].strip()
+                break
+
+        # Strip English legal suffixes
+        for suffix in cls._COMPANY_SUFFIXES:
+            if name.endswith(suffix):
+                name = name[:-len(suffix)].strip().rstrip(',.').strip()
+                break
+
+        return name.strip()
+
+    @staticmethod
+    def _companies_match(name_a: str, name_b: str) -> bool:
+        """
+        Check if two normalized company names refer to the same company.
+        
+        Uses exact equality first, then falls back to substring containment
+        (shorter name must be >= 2 chars to avoid coincidental matches).
+        
+        This is safe because the caller already verified Jaccard >= 0.85,
+        so the job descriptions are highly similar — containment just
+        handles abbreviation variants like 'msb' vs 'hàng hải việt nam (msb)'.
+        """
+        if not name_a or not name_b:
+            return True  # Can't compare → skip guard
+
+        if name_a == name_b:
+            return True
+
+        # Containment check: shorter name fully inside longer name
+        shorter, longer = (name_a, name_b) if len(name_a) <= len(name_b) else (name_b, name_a)
+        if len(shorter) >= 2 and shorter in longer:
+            return True
+
+        return False
 
     def _reconstruct_minhash(self, signature_array: list[int]):
         """
