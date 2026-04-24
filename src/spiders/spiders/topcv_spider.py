@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, date
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 from spiders.spiders.base_spider import BaseJobSpider
 from spiders.items import JobItem
+from scrapy_playwright.page import PageMethod
 
 
 class TopcvSpider(BaseJobSpider):
@@ -268,13 +269,26 @@ class TopcvSpider(BaseJobSpider):
 
             self.logger.debug(f"Following job URL: {job_url}")
 
-            # Brand pages need extra wait for JS-rendered content
+            # Brand pages: use broad selector covering all known layouts + shorter timeout
             is_brand = '/brand/' in job_url
+            detail_meta = {'basic_info': basic_info, 'playwright_context': self._playwright_ctx}
+            if is_brand:
+                # Wait for ANY known brand content container (15s timeout)
+                # Covers: premium layout, box-info layout, standard job-description__item
+                brand_selector = (
+                    '.premium-job-description__box--content, '
+                    '.content-tab, '
+                    '.job-description__item, '
+                    '.box-info'
+                )
+                detail_meta['playwright_page_methods'] = [
+                    PageMethod('wait_for_selector', brand_selector, timeout=15000),
+                ]
             detail_requests.append(self.make_request(
                 url=job_url,
                 callback=self.parse_job_detail,
-                meta={'basic_info': basic_info, 'playwright_context': self._playwright_ctx},
-                wait_for_selector='.premium-job-description__box--content, .box-info .content-tab' if is_brand else None,
+                errback=self._detail_errback,
+                meta=detail_meta,
                 page_timeout=60000,
             ))
 
@@ -359,6 +373,46 @@ class TopcvSpider(BaseJobSpider):
         }
         result = now - delta_map.get(unit, timedelta(0))
         return result.strftime('%Y-%m-%d')
+
+    def _detail_errback(self, failure):
+        """Handle failed detail page requests (e.g. Playwright timeout).
+        For brand pages: retry WITHOUT wait_for_selector to salvage partial content.
+        For others: count as failed and proceed."""
+        request = failure.request
+        url = request.url
+        is_brand = '/brand/' in url
+        retried = request.meta.get('_brand_retry', False)
+
+        if is_brand and not retried:
+            # Retry brand page without wait_for_selector — page may have loaded enough
+            self.logger.warning(
+                f"Brand page selector timeout for {url}, retrying without wait_for_selector"
+            )
+            retry_meta = {
+                k: v for k, v in request.meta.items()
+                if not k.startswith('playwright_page_methods')
+            }
+            retry_meta['_brand_retry'] = True
+            # Remove page methods so no selector wait is applied
+            retry_meta.pop('playwright_page_methods', None)
+            retry_req = self.make_request(
+                url=url,
+                callback=self.parse_job_detail,
+                errback=self._detail_errback,
+                meta=retry_meta,
+                page_timeout=30000,
+            )
+            self.crawler.engine.crawl(retry_req)
+            return  # Don't decrement _pending_details — the retry will handle it
+
+        self.logger.error(f"Request failed for {url}: {failure.value}")
+        self.jobs_failed += 1
+        self._pending_details -= 1
+        if self._pending_details <= 0 and self._next_page_request:
+            self.logger.info("All detail pages done (with errors) → requesting next search page")
+            # Cannot yield from errback, so we must schedule via crawler engine
+            self.crawler.engine.crawl(self._next_page_request)
+            self._next_page_request = None
 
     def parse_job_detail(self, response):
         self.logger.info(f"Parsing job detail: {response.url}")
@@ -608,16 +662,22 @@ class TopcvSpider(BaseJobSpider):
         Extract content blocks from brand layout pages (/brand/ URLs: FPT, VPBank, Sapo, ...).
         Scrapy CSS does not support :has()/:contains(), so XPath is used throughout.
 
-        Premium brand layout (.premium-job-description__box):
-            Container : div.premium-job-description__box
-            Title     : h2.premium-job-description__box--title
-            Content   : div.premium-job-description__box--content
-
-        Fallback – generic h3 → next sibling div (older brand pages).
+        Layout priority:
+          1. Premium brand layout (.premium-job-description__box)
+          2. h3 → next sibling div (older brand pages)
+          3. box-info layout (VPBank, ...)
+          4. Generic heading search (final fallback for unknown brand layouts)
         """
         blocks = {}
 
-        # ── Premium brand layout ──────────────────────────────────────────────
+        # Keyword mapping: key → list of possible heading texts (Vietnamese + English)
+        _keywords = [
+            ('description',  ['Mô tả công việc', 'Mô tả', 'Job Description', 'Description']),
+            ('requirements', ['Yêu cầu ứng viên', 'Yêu cầu', 'Requirements', 'Qualifications']),
+            ('benefits',     ['Quyền lợi', 'Quyền lợi được hưởng', 'Benefits', 'Phúc lợi', 'Đãi ngộ']),
+        ]
+
+        # ── 1. Premium brand layout ───────────────────────────────────────────
         _premium_base = (
             '//div[contains(@class,"premium-job-description__box")]'
             '[.//h2[contains(@class,"premium-job-description__box--title")'
@@ -625,46 +685,70 @@ class TopcvSpider(BaseJobSpider):
             '//*[contains(@class,"premium-job-description__box--content")]'
         )
 
-        for key, keyword in [
-            ('description', 'Mô tả công việc'),
-            ('requirements', 'Yêu cầu ứng viên'),
-            ('benefits',     'Quyền lợi'),
-        ]:
-            text = response.xpath(_premium_base.format(kw=keyword)).xpath('string()').get()
-            if text and text.strip():
-                blocks[key] = text.strip()
+        for key, kw_list in _keywords:
+            for kw in kw_list:
+                text = response.xpath(_premium_base.format(kw=kw)).xpath('string()').get()
+                if text and text.strip():
+                    blocks[key] = text.strip()
+                    break
 
-        # ── Fallback: h3 → next sibling div (older/other brand pages) ─────────
+        # ── 2. h3 → next sibling div (older/other brand pages) ────────────────
         _h3_next_div = (
             '//h3[contains(normalize-space(),"{kw}")]/following-sibling::div[1]'
         )
 
-        for key, keyword in [
-            ('description', 'Mô tả công việc'),
-            ('requirements', 'Yêu cầu ứng viên'),
-            ('benefits',     'Quyền lợi'),
-        ]:
+        for key, kw_list in _keywords:
             if not blocks.get(key):
-                text = response.xpath(_h3_next_div.format(kw=keyword)).xpath('string()').get()
-                if text and text.strip():
-                    blocks[key] = text.strip()
+                for kw in kw_list:
+                    text = response.xpath(_h3_next_div.format(kw=kw)).xpath('string()').get()
+                    if text and text.strip():
+                        blocks[key] = text.strip()
+                        break
 
-        # ── box-info layout (VPBank, ...): div.box-info > h2.title + div.content-tab
+        # ── 3. box-info layout (VPBank, ...): div.box-info > h2.title + div.content-tab
         _box_info = (
             '//div[contains(@class,"box-info")]'
             '[./h2[contains(@class,"title") and contains(normalize-space(),"{kw}")]]'
             '/div[contains(@class,"content-tab")]'
         )
 
-        for key, keyword in [
-            ('description', 'Mô tả công việc'),
-            ('requirements', 'Yêu cầu ứng viên'),
-            ('benefits',     'Quyền lợi'),
-        ]:
+        for key, kw_list in _keywords:
             if not blocks.get(key):
-                text = response.xpath(_box_info.format(kw=keyword)).xpath('string()').get()
-                if text and text.strip():
-                    blocks[key] = text.strip()
+                for kw in kw_list:
+                    text = response.xpath(_box_info.format(kw=kw)).xpath('string()').get()
+                    if text and text.strip():
+                        blocks[key] = text.strip()
+                        break
+
+        # ── 4. Generic heading search (final fallback for unknown brand layouts)
+        # Searches any h2/h3/h4 containing the keyword, then grabs the nearest
+        # content: parent's remaining text, or the next sibling element.
+        if not blocks.get('description'):
+            for key, kw_list in _keywords:
+                if blocks.get(key):
+                    continue
+                for kw in kw_list:
+                    # Try: heading → parent container text (minus heading)
+                    heading = response.xpath(
+                        f'//*[self::h2 or self::h3 or self::h4]'
+                        f'[contains(normalize-space(),"{kw}")]'
+                    ).get()
+                    if heading:
+                        # Get parent's full text and next sibling div
+                        parent_text = response.xpath(
+                            f'//*[self::h2 or self::h3 or self::h4]'
+                            f'[contains(normalize-space(),"{kw}")]/..'
+                        ).xpath('string()').get()
+                        sibling_text = response.xpath(
+                            f'//*[self::h2 or self::h3 or self::h4]'
+                            f'[contains(normalize-space(),"{kw}")]'
+                            f'/following-sibling::*[1]'
+                        ).xpath('string()').get()
+                        # Prefer sibling (cleaner), fallback to parent
+                        text = sibling_text or parent_text
+                        if text and len(text.strip()) > 30:
+                            blocks[key] = text.strip()
+                            break
 
         return blocks
 
