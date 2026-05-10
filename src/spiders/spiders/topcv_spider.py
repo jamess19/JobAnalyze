@@ -35,6 +35,7 @@ class TopcvSpider(BaseJobSpider):
     MAX_CONSECUTIVE_DUPS = 15   # stop if this many consecutive duplicate jobs
     DATE_FOLLOW_DAYS    = 2    # follow detail page only if posted_date >= T - N days
     DATE_STOP_DAYS      = 3    # stop pagination if posted_date < T - N days
+    URL_SWITCH_DELAY    = 30   # seconds to wait before starting the next URL (anti-rate-limit)
 
     custom_settings = {
         'DOWNLOAD_DELAY': 15,
@@ -69,6 +70,7 @@ class TopcvSpider(BaseJobSpider):
         # Sequential page processing: finish all detail pages before next search page
         self._pending_details   = 0
         self._next_page_request = None
+        self._next_url_after_details = False  # flag: call _start_next_url when details finish
 
     def _init_db(self):
         """Load T = max(posted_date) từ DB, lọc theo source của spider này."""
@@ -142,7 +144,9 @@ class TopcvSpider(BaseJobSpider):
         yield self.make_request(
             url=first_url,
             callback=self.parse,
-            meta={'page': 1, 'base_search_url': first_base, 'playwright_context': self._playwright_ctx},
+            errback=self._search_errback,
+            meta={'page': 1, 'base_search_url': first_base, 'playwright_context': self._playwright_ctx,
+                  'handle_httpstatus_list': [403]},
             page_timeout=60000,
         )
     
@@ -156,11 +160,21 @@ class TopcvSpider(BaseJobSpider):
         - Auto-paginate không giới hạn trang.
         """
         if self.should_stop:
-            yield from self._start_next_url()
+            self._schedule_next_url()
             return
 
         page            = response.meta.get('page', 1)
         base_search_url = response.meta.get('base_search_url', '')
+
+        # --- Handle 403 after retries exhausted (HttpErrorMiddleware bypass) ---
+        if response.status == 403:
+            self.logger.warning(
+                f"Search page returned 403 after all retries: {response.url}. "
+                f"Skipping to next URL in queue."
+            )
+            self._schedule_next_url()
+            return
+
         self.logger.info(f"Parsing search page {page}: {response.url}")
 
         # Detect redirect to earlier page (TopCV 302s page>max → last valid page)
@@ -175,7 +189,7 @@ class TopcvSpider(BaseJobSpider):
             self.logger.info(
                 f"Redirected from page {page} to page {actual_page} — reached last page, stopping pagination."
             )
-            yield from self._start_next_url()
+            self._schedule_next_url()
             return
 
         # Nếu _max_date là None (chưa có data source này) → crawl toàn bộ, không lọc date
@@ -187,7 +201,7 @@ class TopcvSpider(BaseJobSpider):
 
         if not job_items:
             self.logger.warning(f"No job items found on page {page}, stopping pagination.")
-            yield from self._start_next_url()
+            self._schedule_next_url()
             return
 
         self.logger.info(f"Found {len(job_items)} job items on page {page}")
@@ -307,14 +321,14 @@ class TopcvSpider(BaseJobSpider):
             self._next_page_request = self.make_request(
                 url=next_url,
                 callback=self.parse,
-                meta={'page': next_page, 'base_search_url': base_search_url, 'playwright_context': self._playwright_ctx},
+                errback=self._search_errback,
+                meta={'page': next_page, 'base_search_url': base_search_url, 'playwright_context': self._playwright_ctx,
+                      'handle_httpstatus_list': [403]},
                 page_timeout=60000,
             )
         elif stop_pagination or self.should_stop:
-            # Current URL finished — prepare next URL in queue
-            next_url_requests = list(self._start_next_url())
-            if next_url_requests:
-                self._next_page_request = next_url_requests[0]
+            # Current URL finished — schedule next URL after details complete
+            self._next_url_after_details = True
 
         # --- Yield detail requests; next page triggered when all finish ---
         if detail_requests:
@@ -325,29 +339,67 @@ class TopcvSpider(BaseJobSpider):
             # No detail requests on this page → go to next page immediately
             yield self._next_page_request
             self._next_page_request = None
+        elif self._next_url_after_details:
+            # No detail requests and URL finished — schedule next URL now
+            self._next_url_after_details = False
+            self._schedule_next_url()
         else:
-            yield from self._start_next_url()
+            self._schedule_next_url()
     
-    def _start_next_url(self):
-        """Pop the next URL from the queue and start crawling it (sequential mode)."""
+    def _schedule_next_url(self):
+        """Schedule the next URL in the queue with a delay to avoid rate-limiting.
+        Uses reactor.callLater so the spider idles during the cooldown period."""
         if not hasattr(self, '_url_queue') or not self._url_queue:
+            self.logger.info("[Next URL] No more URLs in queue.")
             return
+
+        from twisted.internet import reactor
+
         next_base = self._url_queue.pop(0)
         remaining = len(self._url_queue)
-        self.logger.info(f"[Next URL] Starting: {next_base}  ({remaining} remaining in queue)")
+        delay = self.URL_SWITCH_DELAY
+
+        self.logger.info(
+            f"[Next URL] Waiting {delay}s before starting: {next_base}  "
+            f"({remaining} remaining in queue)"
+        )
 
         # Reset stop flags for the new URL
         self.should_stop = False
         self.consecutive_dup_count = 0
 
         first_url = self._paginate_url(next_base, 1)
-        self.logger.info(f"Requesting search page 1: {first_url}")
-        yield self.make_request(
+        req = self.make_request(
             url=first_url,
             callback=self.parse,
-            meta={'page': 1, 'base_search_url': next_base, 'playwright_context': self._playwright_ctx},
+            errback=self._search_errback,
+            meta={'page': 1, 'base_search_url': next_base, 'playwright_context': self._playwright_ctx,
+                  'handle_httpstatus_list': [403]},
             page_timeout=60000,
         )
+
+        def _do_crawl():
+            self.logger.info(f"[Next URL] Cooldown finished, starting now: {first_url}")
+            self.crawler.engine.crawl(req)
+
+        reactor.callLater(delay, _do_crawl)
+
+    def _search_errback(self, failure):
+        """Handle failed search page requests (e.g. Playwright timeout, connection error).
+        Logs detailed error info and advances to the next URL in the queue.
+        Note: 403 after retry exhaustion is handled in parse() via handle_httpstatus_list."""
+        url = failure.request.url
+        remaining = len(self._url_queue) if hasattr(self, '_url_queue') else 0
+        self.logger.warning(
+            f"{'='*60}\n"
+            f"  SEARCH PAGE FAILED: {url}\n"
+            f"  Error type : {failure.type.__name__}\n"
+            f"  Error msg  : {failure.value}\n"
+            f"  URLs left  : {remaining}\n"
+            f"  Action     : Scheduling next URL with {self.URL_SWITCH_DELAY}s delay\n"
+            f"{'='*60}"
+        )
+        self._schedule_next_url()
 
     def parse_relative_date(self, text: str) -> str:
         """Convert '1 ngày trước', '3 giờ trước' → ISO date string"""
@@ -408,11 +460,16 @@ class TopcvSpider(BaseJobSpider):
         self.logger.error(f"Request failed for {url}: {failure.value}")
         self.jobs_failed += 1
         self._pending_details -= 1
-        if self._pending_details <= 0 and self._next_page_request:
-            self.logger.info("All detail pages done (with errors) → requesting next search page")
-            # Cannot yield from errback, so we must schedule via crawler engine
-            self.crawler.engine.crawl(self._next_page_request)
-            self._next_page_request = None
+        if self._pending_details <= 0:
+            if self._next_page_request:
+                self.logger.info("All detail pages done (with errors) → requesting next search page")
+                # Cannot yield from errback, so we must schedule via crawler engine
+                self.crawler.engine.crawl(self._next_page_request)
+                self._next_page_request = None
+            elif self._next_url_after_details:
+                self.logger.info("All detail pages done (with errors) → scheduling next URL")
+                self._next_url_after_details = False
+                self._schedule_next_url()
 
     def parse_job_detail(self, response):
         self.logger.info(f"Parsing job detail: {response.url}")
@@ -569,10 +626,15 @@ class TopcvSpider(BaseJobSpider):
 
         # --- Sequential page processing: countdown and trigger next page ---
         self._pending_details -= 1
-        if self._pending_details <= 0 and self._next_page_request:
-            self.logger.info("All detail pages done → requesting next search page")
-            yield self._next_page_request
-            self._next_page_request = None
+        if self._pending_details <= 0:
+            if self._next_page_request:
+                self.logger.info("All detail pages done → requesting next search page")
+                yield self._next_page_request
+                self._next_page_request = None
+            elif self._next_url_after_details:
+                self.logger.info("All detail pages done → scheduling next URL")
+                self._next_url_after_details = False
+                self._schedule_next_url()
 
     def closed(self, reason):
         """Override to include premium-job stats in the final summary."""
