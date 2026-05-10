@@ -1,5 +1,9 @@
+import logging
 from itemadapter import ItemAdapter
 from scrapy.exceptions import DropItem
+
+
+logger = logging.getLogger(__name__)
 
 
 class ValidationPipeline:
@@ -8,8 +12,15 @@ class ValidationPipeline:
     def __init__(self):
         self.required_fields = ['job_url', 'title', 'source']
 
-    def process_item(self, item, spider):
+    @classmethod
+    def from_crawler(cls, crawler):
+        pipeline = cls()
+        pipeline.crawler = crawler
+        return pipeline
+
+    def process_item(self, item):
         adapter = ItemAdapter(item)
+        spider = self.crawler.spider
 
         # Check required fields
         for field in self.required_fields:
