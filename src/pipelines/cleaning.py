@@ -1,5 +1,9 @@
+import logging
 from itemadapter import ItemAdapter
 from utils.normalizer import DataNormalizer
+
+
+logger = logging.getLogger(__name__)
 
 
 class CleaningPipeline:
@@ -13,8 +17,15 @@ class CleaningPipeline:
     def __init__(self):
         self.normalizer = DataNormalizer()
 
-    def process_item(self, item, spider):
+    @classmethod
+    def from_crawler(cls, crawler):
+        pipeline = cls()
+        pipeline.crawler = crawler
+        return pipeline
+
+    def process_item(self, item):
         adapter = ItemAdapter(item)
+        spider = self.crawler.spider
 
         # Clean text fields: remove HTML tags, normalize whitespace
         text_fields = ['description', 'requirements', 'benefits']

@@ -29,18 +29,26 @@ class SkillExtractionPipeline:
     - Domain trích xuất được ghi vào extra_data['domains'].
     """
 
-    def open_spider(self, spider):
+    @classmethod
+    def from_crawler(cls, crawler):
+        pipeline = cls()
+        pipeline.crawler = crawler
+        return pipeline
+
+    def open_spider(self):
+        spider = self.crawler.spider
         self.extractor = get_skill_extractor()
         self.skill_normalizer = SkillNormalizer()
         spider.logger.info("SkillExtractionPipeline: NLP SkillExtractor ready")
 
-    def close_spider(self, spider):
+    def close_spider(self):
+        spider = self.crawler.spider
         # Flush unmapped skills frequency report at end of crawl
         log_path = self.skill_normalizer.flush_unmapped_log(threshold=1)
         if log_path:
             spider.logger.info(f"SkillExtractionPipeline: unmapped skills report → {log_path}")
 
-    def process_item(self, item, spider):
+    def process_item(self, item):
         adapter = ItemAdapter(item)
 
         # --- Lấy text để phân tích ---
