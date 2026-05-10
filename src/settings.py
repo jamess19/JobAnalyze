@@ -8,8 +8,14 @@
 #     https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
 import os
+import warnings
 from datetime import datetime
 from dotenv import load_dotenv
+
+# ── Suppress noisy ScrapyDeprecationWarning about spider argument ──
+# Scrapy 2.13+ warns that process_item/process_request/open_spider/close_spider
+# should not accept a `spider` parameter. These warnings are harmless for now.
+warnings.filterwarnings("ignore", message=r".*requires a spider argument.*", category=DeprecationWarning)
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 env_path = os.path.join(base_dir, '.env')
