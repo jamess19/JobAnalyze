@@ -447,12 +447,17 @@ class TopcvSpider(BaseJobSpider):
             retry_meta['_brand_retry'] = True
             # Remove page methods so no selector wait is applied
             retry_meta.pop('playwright_page_methods', None)
-            retry_req = self.make_request(
+            # Use scrapy.Request directly with dont_filter=True because the
+            # original URL is already in Scrapy's dupe filter.  make_request()
+            # always sets dont_filter=False, so the retry would be silently
+            # dropped, causing _pending_details to never reach 0 and the
+            # spider to stop processing subsequent URLs.
+            retry_req = scrapy.Request(
                 url=url,
                 callback=self.parse_job_detail,
                 errback=self._detail_errback,
                 meta=retry_meta,
-                page_timeout=30000,
+                dont_filter=True,
             )
             self.crawler.engine.crawl(retry_req)
             return  # Don't decrement _pending_details — the retry will handle it
