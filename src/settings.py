@@ -99,16 +99,9 @@ DOWNLOADER_MIDDLEWARES = {
 
 # Enable or disable extensions
 # See https://docs.scrapy.org/en/latest/topics/extensions.html
-EXTENSIONS = {
-   "extensions.runtime_monitor.SpiderRuntimeMonitor": 500,
-}
-
-# ============================================================
-# TELEGRAM ALERT CONFIGURATION
-# ============================================================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-MIN_RUNTIME_MINUTES = int(os.getenv("MIN_RUNTIME_MINUTES", "10"))  # Alert if spider runs < N minutes
+#EXTENSIONS = {
+#    "scrapy.extensions.telnet.TelnetConsole": None,
+#}
 
 # Configure item pipelines
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html

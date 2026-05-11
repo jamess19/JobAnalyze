@@ -203,7 +203,6 @@ class BaseJobSpider(scrapy.Spider):
         wait_until: str = "domcontentloaded",
         wait_for_selector: str = None,
         page_timeout: int = 30000,
-        dont_filter: bool = False,
     ) -> scrapy.Request:
         """
         Create a Scrapy request with Playwright rendering
@@ -215,7 +214,6 @@ class BaseJobSpider(scrapy.Spider):
         :param wait_until: Wait until event (load, domcontentloaded, networkidle)
         :param wait_for_selector: Optional CSS selector to wait for
         :param page_timeout: Page timeout in milliseconds
-        :param dont_filter: If True, bypass Scrapy's duplicate filter
         :return: Scrapy Request with Playwright meta
         """
         playwright_meta = {
@@ -244,10 +242,10 @@ class BaseJobSpider(scrapy.Spider):
             callback=callback,
             errback=errback or (lambda f: self.handle_error(f, url)),
             meta=request_meta,
-            dont_filter=dont_filter,
+            dont_filter=False,
         )
 
-    def make_request(self, url: str, callback, errback=None, meta: Dict = None, use_playwright: bool = None, dont_filter: bool = False, **playwright_kwargs) -> scrapy.Request:
+    def make_request(self, url: str, callback, errback=None, meta: Dict = None, use_playwright: bool = None, **playwright_kwargs) -> scrapy.Request:
         """
         Create a request, optionally using Playwright
 
@@ -256,7 +254,6 @@ class BaseJobSpider(scrapy.Spider):
         :param errback: Error callback function
         :param meta: Additional meta data
         :param use_playwright: Override spider's use_playwright setting
-        :param dont_filter: If True, bypass Scrapy's duplicate filter
         :param playwright_kwargs: Additional Playwright options
         :return: Scrapy Request
         """
@@ -265,9 +262,9 @@ class BaseJobSpider(scrapy.Spider):
         )
 
         if should_use_playwright:
-            return self.make_playwright_request(url=url, callback=callback, errback=errback, meta=meta, dont_filter=dont_filter, **playwright_kwargs)
+            return self.make_playwright_request(url=url, callback=callback, errback=errback, meta=meta, **playwright_kwargs)
         else:
-            return scrapy.Request(url=url, callback=callback, errback=errback or (lambda f: self.handle_error(f, url)), meta=meta or {}, dont_filter=dont_filter)
+            return scrapy.Request(url=url, callback=callback, errback=errback or (lambda f: self.handle_error(f, url)), meta=meta or {})
 
     def closed(self, reason):
         """
@@ -281,11 +278,6 @@ class BaseJobSpider(scrapy.Spider):
         self.logger.info(
             f"  Success rate: {self.jobs_scraped / max(self.jobs_scraped + self.jobs_failed, 1) * 100:.2f}%"
         )
-
-    async def start(self):
-        """Scrapy 2.13+ entry point (async). Delegates to start_requests()."""
-        for req in self.start_requests():
-            yield req
 
     # Abstract methods to be implemented by subclasses
     @abstractmethod

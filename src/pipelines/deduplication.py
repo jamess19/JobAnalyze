@@ -90,13 +90,11 @@ class DeduplicationPipeline:
     def from_crawler(cls, crawler):
         """Create pipeline from Scrapy crawler settings"""
         pipeline = cls()
-        pipeline.crawler = crawler
         pipeline.database_url = crawler.settings.get("DATABASE_URL")
         return pipeline
 
-    def open_spider(self):
+    def open_spider(self, spider):
         """Initialize database connection"""
-        spider = self.crawler.spider
         # Initialize database connection
         engine = get_engine(self.database_url)
         self.Session = get_session_factory(engine)
@@ -107,7 +105,7 @@ class DeduplicationPipeline:
             f"(threshold={self.JACCARD_THRESHOLD}, metadata_guard=company+location)"
         )
 
-    def process_item(self, item):
+    def process_item(self, item, spider):
         """
         Check for duplicates using database-backed LSH with Jaccard verification.
         
@@ -115,7 +113,6 @@ class DeduplicationPipeline:
         1. Batch cache check (race condition guard)
         2. MinHash LSH → find candidates → Jaccard verify → metadata guard
         """
-        spider = self.crawler.spider
         adapter = ItemAdapter(item)
         url = adapter.get("job_url", "")
         title = adapter.get("title", "") or ""
@@ -171,6 +168,7 @@ class DeduplicationPipeline:
                     session, 
                     minhash, 
                     candidate_job_ids, 
+                    spider,
                     current_date_posted,
                     adapter,
                 )
@@ -244,6 +242,7 @@ class DeduplicationPipeline:
         session, 
         query_minhash, 
         candidate_job_ids: set[str], 
+        spider,
         current_date_posted: str = "",
         adapter: ItemAdapter | None = None,
     ) -> tuple[bool, str | None, float]:
@@ -259,12 +258,11 @@ class DeduplicationPipeline:
         :param session: Database session
         :param query_minhash: MinHash object of current job
         :param candidate_job_ids: Set of candidate job IDs from LSH query
+        :param spider: Spider instance for logging
         :param current_date_posted: Date posted of the current item (YYYY-MM-DD string)
         :param adapter: ItemAdapter of current item (for metadata comparison)
         :return: (is_duplicate, duplicate_job_id, similarity_score)
         """
-        spider = self.crawler.spider
-
         # Step 1: Fetch all candidate signatures + metadata from database
         candidate_data_map = self.repo.get_signatures(session, list(candidate_job_ids))
         
@@ -472,9 +470,8 @@ class DeduplicationPipeline:
         if text.strip():
             self.deduplicator.add(text)
 
-    def close_spider(self):
+    def close_spider(self, spider):
         """Log deduplication statistics"""
-        spider = self.crawler.spider
         spider.logger.info("=" * 60)
         spider.logger.info("Deduplication Statistics:")
         spider.logger.info(f"  Unique jobs: {self.stats['unique']}")

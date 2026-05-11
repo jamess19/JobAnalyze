@@ -35,19 +35,11 @@ class ExportPipeline:
     def __init__(self):
         self.output_dir = 'data'
 
-    @classmethod
-    def from_crawler(cls, crawler):
-        pipeline = cls()
-        pipeline.crawler = crawler
-        return pipeline
-
-    def open_spider(self):
-        spider = self.crawler.spider
+    def open_spider(self, spider):
         os.makedirs(self.output_dir, exist_ok=True)
         spider.logger.info(f"Export pipeline initialized. Output dir: {self.output_dir}")
 
-    def process_item(self, item):
-        spider = self.crawler.spider
+    def process_item(self, item, spider):
         adapter = ItemAdapter(item)
         item_dict = dict(adapter)
         with ExportPipeline._lock:
@@ -55,8 +47,7 @@ class ExportPipeline:
         spider.logger.debug(f"Item collected for export: {adapter.get('job_url')}")
         return item
 
-    def close_spider(self):
-        spider = self.crawler.spider
+    def close_spider(self, spider):
         spider.logger.info(
             f"Spider '{spider.name}' finished. "
             f"Total items collected so far: {len(ExportPipeline._shared_items)}"
