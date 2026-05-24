@@ -687,13 +687,9 @@ class TopcvSpider(BaseJobSpider):
             elif any(k in header_text for k in ['quyền lợi', 'benefit', 'đãi ngộ']): key = 'benefits'
             
             if key:
-                # Lấy nội dung: Thử lấy sibling div hoặc parent div text
-                parent = header.xpath('..') # Lên 1 cấp
                 # Cách 1: Standard layout (nằm trong .job-description__item--content)
+                parent = header.xpath('..') # Lên 1 cấp
                 content = parent.css('.job-description__item--content').xpath('string()').get()
-                # Cách 2: Brand layout (thường nằm ngay trong thẻ p hoặc div sau header)
-                if not content:
-                    content = ''.join(parent.xpath('text() | *//text()').getall())
                 
                 # Loại bỏ chính cái header ra khỏi content
                 if content:
