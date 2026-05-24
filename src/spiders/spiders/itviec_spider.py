@@ -244,6 +244,7 @@ class ItviecSpider(BaseJobSpider):
                 url=absolute_url,
                 callback=self.parse_job_detail,
                 meta={'basic_info': basic_info},
+                wait_for_selector="div.paragraph",
             ))
 
         self.logger.info(
