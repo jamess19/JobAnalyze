@@ -366,7 +366,7 @@ class ItviecSpider(BaseJobSpider):
         # ITViec hiển thị 3-5 related jobs ở cuối trang, mỗi job có section "Job Description"
         # riêng — nếu dùng //div toàn cục sẽ bị quét luôn content của các job đó.
         desc_texts = response.xpath('''
-            //section[contains(@class, "job-description")]
+            //section[contains(@class, "job-description") or contains(@class, "job-content")]
             //div[contains(@class, "paragraph")]
             [h2[contains(translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "job description") or contains(text(), "Mô tả")]]
             /descendant::text()[not(parent::h2)]
@@ -374,7 +374,7 @@ class ItviecSpider(BaseJobSpider):
 
         # Fallback 1: bỏ điều kiện h2, lấy toàn bộ text trong section.job-description
         if not desc_texts:
-            desc_texts = response.css('section.job-description div.paragraph *::text').getall()
+            desc_texts = response.css('section.job-description div.paragraph *::text').getall() or response.css('section.job-content div.paragraph *::text').getall()
 
         # Fallback 2: layout cũ — cẩn thận vì không có scope section
         if not desc_texts:
@@ -390,7 +390,7 @@ class ItviecSpider(BaseJobSpider):
         # "skills" xuất hiện trong h2 của related jobs → XPath //div bắt luôn
         # text của 3-5 job khác → NLP extract ra hàng chục skill sai.
         req_texts = response.xpath('''
-            //section[contains(@class, "job-experiences")]
+            //section[contains(@class, "job-experiences") or contains(@class, "job-content")]
             //div[contains(@class, "paragraph")]
             [h2[contains(translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "skills") or contains(text(), "Yêu cầu")]]
             /descendant::text()[not(parent::h2)]
@@ -398,7 +398,7 @@ class ItviecSpider(BaseJobSpider):
 
         # Fallback 1: bỏ điều kiện h2, lấy toàn bộ text trong section.job-experiences
         if not req_texts:
-            req_texts = response.css('section.job-experiences div.paragraph *::text').getall()
+            req_texts = response.css('section.job-experiences div.paragraph *::text').getall() or response.css('section.job-content div.paragraph *::text').getall()
 
         requirements = utils.join_text(req_texts)
         item['requirements'] = requirements
@@ -407,7 +407,7 @@ class ItviecSpider(BaseJobSpider):
         # Logic: Tìm div.paragraph có chứa h2 là "Love Working" hoặc "Quyền lợi"
         # [FIX #1] Scope vào section.job-why-love-working
         ben_texts = response.xpath('''
-            //section[contains(@class, "job-why-love-working")]
+            //section[contains(@class, "job-why-love-working") or contains(@class, "job-content")]
             //div[contains(@class, "paragraph")]
             [h2[contains(translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "love working") or contains(text(), "Quyền lợi")]]
             /descendant::text()[not(parent::h2)]
@@ -415,7 +415,7 @@ class ItviecSpider(BaseJobSpider):
 
         # Fallback: bỏ điều kiện h2, lấy toàn bộ text trong section
         if not ben_texts:
-            ben_texts = response.css('section.job-why-love-working div.paragraph *::text').getall()
+            ben_texts = response.css('section.job-why-love-working div.paragraph *::text').getall() or response.css('section.job-content div.paragraph *::text').getall()
 
         item['benefits'] = utils.join_text(ben_texts)
 
