@@ -59,6 +59,7 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "c++"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "c#"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "c/c++"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "c"}, {"TEXT": "/"}, {"LOWER": "c++"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "golang"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "go"}], "id": "golang"},
             {"label": "SKILL", "pattern": [{"LOWER": "rust"}]},
@@ -326,6 +327,7 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "sql"}, {"LOWER": "server"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "t-sql"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "pl/sql"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "pl"}, {"TEXT": "/"}, {"LOWER": "sql"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "plsql"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "db2"}]},
             # NoSQL Databases
@@ -390,6 +392,7 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "sns"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "pubsub"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "pub/sub"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "pub"}, {"TEXT": "/"}, {"LOWER": "sub"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "azure"}, {"LOWER": "service"}, {"LOWER": "bus"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "nats"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "zeromq"}]},
@@ -603,6 +606,7 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "jenkins"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "gitlab"}, {"LOWER": "ci"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "gitlab"}, {"LOWER": "ci/cd"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "gitlab"}, {"LOWER": "ci"}, {"TEXT": "/"}, {"LOWER": "cd"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "github"}, {"LOWER": "actions"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "circleci"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "circle"}, {"LOWER": "ci"}]},
@@ -621,6 +625,7 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "spinnaker"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "tekton"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "ci/cd"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "ci"}, {"TEXT": "/"}, {"LOWER": "cd"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "cicd"}]},
             # Infrastructure as Code
             {"label": "SKILL", "pattern": [{"LOWER": "terraform"}]},
@@ -809,7 +814,9 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "http"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "https"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "http/2"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "http"}, {"TEXT": "/"}, {"TEXT": "2"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "http/3"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "http"}, {"TEXT": "/"}, {"TEXT": "3"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "tcp"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "udp"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "mqtt"}]},
@@ -939,6 +946,12 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "cocos"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "ui/ux"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "ui"}, {"TEXT": "/"}, {"LOWER": "ux"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "ux/ui"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "ux"}, {"TEXT": "/"}, {"LOWER": "ui"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "uml"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "bpmn"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "uml/bpmn"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "uml"}, {"TEXT": "/"}, {"LOWER": "bpmn"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "ux"}, {"LOWER": "design"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "ui"}, {"LOWER": "design"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "user"}, {"LOWER": "experience"}]},
@@ -961,6 +974,7 @@ class SkillExtractor:
             {"label": "SKILL", "pattern": [{"LOWER": "ssl"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "tls"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "ssl/tls"}]},
+            {"label": "SKILL", "pattern": [{"LOWER": "ssl"}, {"TEXT": "/"}, {"LOWER": "tls"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "encryption"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "cryptography"}]},
             {"label": "SKILL", "pattern": [{"LOWER": "firewall"}]},
@@ -1075,21 +1089,18 @@ class SkillExtractor:
     
     def _add_matcher_patterns(self):
         """Add Matcher patterns for complex skill expressions"""
-        
-        # Pattern for "X developer" or "X engineer"
+
+        # Pattern for "X developer" or "X engineer" (e.g., "React developer" → "React")
+        # Chỉ giữ lại pattern này vì EntityRuler đã cover tất cả single-token skills.
         pattern_dev = [
             {"POS": "PROPN", "OP": "+"},
             {"LOWER": {"IN": ["developer", "engineer", "programmer", "architect"]}}
         ]
         self.matcher.add("SKILL_ROLE", [pattern_dev])
-        
-        # Pattern for "X/Y" (e.g., "HTML/CSS")
-        pattern_slash = [
-            {"IS_ALPHA": True},
-            {"TEXT": "/"},
-            {"IS_ALPHA": True}
-        ]
-        self.matcher.add("SKILL_COMBO", [pattern_slash])
+
+        # [FIX #3] SKILL_COMBO (word/word) đã bị xóa.
+        # Pattern cũ dùng IS_ALPHA/IS_ALPHA bắt MỌI cặp từ như "him/her", "full/part"...
+        # EntityRuler đã có pattern cụ thể cho "ci/cd", "html/css" nên không cần matcher này.
     
     def extract(self, text: str) -> Dict[str, List[str]]:
         """
@@ -1116,27 +1127,24 @@ class SkillExtractor:
                 normalized_domain = self._normalize_domain(ent.text)
                 if normalized_domain:
                     domains.add(normalized_domain)
-        
-        # Extract from matcher
+
+        # Extract from matcher (chỉ còn SKILL_ROLE sau khi xóa SKILL_COMBO)
         matches = self.matcher(doc)
         for match_id, start, end in matches:
             span = doc[start:end]
             match_label = self.nlp.vocab.strings[match_id]
-            
+
             if match_label == "SKILL_ROLE":
+                # Chỉ lấy PROPN tokens — tránh bắt "developer", "engineer" vào skills
                 skill_part = " ".join([token.text for token in span if token.pos_ == "PROPN"])
                 if skill_part:
                     skills.add(skill_part)
-            elif match_label == "SKILL_COMBO":
-                skills.add(span.text)
-        
-        # Additional heuristic: PROPN + tech keywords
-        for i, token in enumerate(doc):
-            if token.pos_ == "PROPN" and i + 1 < len(doc):
-                next_token = doc[i + 1]
-                if next_token.lower_ in ["api", "sdk", "framework", "library", "database"]:
-                    skills.add(token.text)
-        
+
+        # [FIX #4] PROPN heuristic đã bị xóa.
+        # Heuristic cũ: nếu PROPN đứng trước "api/sdk/framework/library/database" thì add vào skills.
+        # Vấn đề: bắt mọi proper noun trong văn bản dài — bao gồm tên người, tên công ty,
+        # tên sản phẩm không phải skill. EntityRuler đã cover tất cả skill thực sự cần thiết.
+
         return {
             'skills': sorted(list(skills)),
             'domains': sorted(list(domains))
