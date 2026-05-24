@@ -121,7 +121,7 @@ class JobRepository:
             set_={"last_seen": "now()"},
         )
         session.execute(stmt)
-        return session.query(Job).filter_by(id=item["job_id"]).first()
+        return session.query(Job).filter_by(id=item["job_id"], posted_date=values["posted_date"]).first()
 
     def _upsert_skills(self, session: Session, item: dict, job: Job):
         skills_raw = item.get("skills_tags") or item.get("skills_required") or []
