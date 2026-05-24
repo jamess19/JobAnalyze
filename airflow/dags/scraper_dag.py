@@ -22,7 +22,7 @@ with DAG(
     'daily_job_scraper',
     default_args=default_args,
     description='Run job spiders daily',
-    schedule_interval='0 0 * * *',
+    schedule_interval='0 10 * * *',
     catchup=False,
     max_active_runs=1,
 ) as dag:
