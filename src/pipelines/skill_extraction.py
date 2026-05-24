@@ -52,15 +52,19 @@ class SkillExtractionPipeline:
             return item
 
         # --- Chạy NLP ---
+        # [PATCH 1] Kết quả NLP được lưu hoàn toàn trong biến LOCAL của hàm này.
+        # Tuyệt đối không tích lũy vào self.extractor hay bất kỳ biến instance nào
+        # để tránh rò rỉ dữ liệu giữa các item (cross-item contamination).
         try:
-            result = self.extractor.extract(full_text)
+            nlp_result: dict = self.extractor.extract(full_text)
         except Exception as e:
             logger.warning(f"SkillExtractionPipeline: NLP failed for job "
                            f"'{adapter.get('job_url')}': {e}")
             return item
 
-        nlp_skills: list[str] = result.get("skills") or []
-        nlp_domains: list[str] = result.get("domains") or []
+        # Biến local, không gán vào self hay self.extractor
+        nlp_skills: list[str] = nlp_result.get("skills") or []
+        nlp_domains: list[str] = nlp_result.get("domains") or []
 
         # --- Merge skills vào skills_tags ---
         existing_tags = adapter.get("skills_tags") or []
@@ -68,12 +72,18 @@ class SkillExtractionPipeline:
             existing_tags = [s.strip() for s in existing_tags.split(",") if s.strip()]
 
         # Combine all skills then normalize + deduplicate
-        all_skills = existing_tags + nlp_skills
-        normalized = self.skill_normalizer.normalize_list(all_skills)
+        all_skills: list[str] = list(existing_tags) + list(nlp_skills)
+        normalized: list[str] = self.skill_normalizer.normalize_list(all_skills)
+
+        # [PATCH 3] Final dedup safeguard: dùng set để loại bỏ mọi duplicate còn sót
+        # sau quá trình normalize (phòng edge case: hai synonym khác nhau cùng map
+        # về một canonical name nhưng normalize_list bị race hoặc dữ liệu cũ).
+        # Dùng dict.fromkeys để giữ nguyên thứ tự (insertion-order, Python 3.7+).
+        normalized = list(dict.fromkeys(normalized))
 
         if normalized:
             adapter["skills_tags"] = normalized
-            logger.debug(f"SkillExtractionPipeline: {len(normalized)} normalized skills "
+            logger.debug(f"SkillExtractionPipeline: {len(normalized)} normalized+deduped skills "
                          f"for '{adapter.get('title')}'")
 
         # --- Merge domains vào extra_data['domains'] ---
@@ -82,8 +92,8 @@ class SkillExtractionPipeline:
             if not isinstance(extra_data, dict):
                 extra_data = {}
 
-            existing_domains = extra_data.get("domains") or []
-            existing_domains_lower = {d.lower() for d in existing_domains}
+            existing_domains: list[str] = extra_data.get("domains") or []
+            existing_domains_lower: set[str] = {d.lower() for d in existing_domains}
             new_domains = [d for d in nlp_domains if d.lower() not in existing_domains_lower]
 
             if new_domains:
