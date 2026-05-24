@@ -54,7 +54,10 @@ class SkillExtractionPipeline:
         full_text = f"{cleaned_desc}\n{cleaned_req}".strip()
 
         if not full_text:
+            logger.info(f"SkillExtractionPipeline: NO text extracted for '{adapter.get('title')}' - skipping NLP")
             return item
+
+        logger.info(f"SkillExtractionPipeline: Processing text (length {len(full_text)}) for '{adapter.get('title')}'")
 
         # --- Chạy NLP ---
         # [PATCH 1] Kết quả NLP được lưu hoàn toàn trong biến LOCAL của hàm này.
@@ -88,8 +91,7 @@ class SkillExtractionPipeline:
 
         if normalized:
             adapter["skills_tags"] = normalized
-            logger.debug(f"SkillExtractionPipeline: {len(normalized)} normalized+deduped skills "
-                         f"for '{adapter.get('title')}'")
+            logger.info(f"SkillExtractionPipeline: {len(normalized)} skills for '{adapter.get('title')}': {normalized}")
 
         # --- Merge domains vào extra_data['domains'] ---
         if nlp_domains:
