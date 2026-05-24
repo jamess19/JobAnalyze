@@ -14,6 +14,7 @@ import logging
 from itemadapter import ItemAdapter
 from utils.skill_extractor import get_skill_extractor
 from utils.skill_normalizer import SkillNormalizer
+from utils.utils import clean_company_intro
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,11 @@ class SkillExtractionPipeline:
         # --- Lấy text để phân tích ---
         description = adapter.get("description") or ""
         requirements = adapter.get("requirements") or ""
-        full_text = f"{description} {requirements}".strip()
+        
+        # Loại bỏ phần giới thiệu công ty trước khi đưa vào bộ trích xuất skill (tránh over-extraction)
+        cleaned_desc = clean_company_intro(description)
+        cleaned_req = clean_company_intro(requirements)
+        full_text = f"{cleaned_desc}\n{cleaned_req}".strip()
 
         if not full_text:
             return item
