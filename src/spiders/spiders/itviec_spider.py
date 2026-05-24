@@ -340,8 +340,8 @@ class ItviecSpider(BaseJobSpider):
         # Skills: tìm thẻ a bên trong div theo sau "Skills:" trên trang detail
         # [FIX #1] Scope vào section.job-header-section để tránh quét related jobs
         skill_elems = response.xpath(
-            '(//div[contains(@class,"tag-list") or contains(@class,"skills")]//a/text()'
-            ' | //div[contains(text(),"Skills:")]/following-sibling::div[1]//a/text())'
+            '(//div[contains(@class,"preview-job-header")]//div[contains(@class,"tag-list") or contains(@class,"skills")]//a/text()'
+            ' | //div[contains(@class,"preview-job-header")]//div[contains(text(),"Skills:")]/following-sibling::div[1]//a/text())'
         ).getall()
         if skill_elems:
             skills = [s.strip() for s in skill_elems if s and s.strip()]
