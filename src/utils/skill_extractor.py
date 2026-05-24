@@ -1090,13 +1090,7 @@ class SkillExtractor:
     def _add_matcher_patterns(self):
         """Add Matcher patterns for complex skill expressions"""
 
-        # Pattern for "X developer" or "X engineer" (e.g., "React developer" → "React")
-        # Chỉ giữ lại pattern này vì EntityRuler đã cover tất cả single-token skills.
-        pattern_dev = [
-            {"POS": "PROPN", "OP": "+"},
-            {"LOWER": {"IN": ["developer", "engineer", "programmer", "architect"]}}
-        ]
-        self.matcher.add("SKILL_ROLE", [pattern_dev])
+        # All matcher patterns removed because EntityRuler covers all required single-token skills.
 
         # [FIX #3] SKILL_COMBO (word/word) đã bị xóa.
         # Pattern cũ dùng IS_ALPHA/IS_ALPHA bắt MỌI cặp từ như "him/her", "full/part"...
@@ -1128,17 +1122,8 @@ class SkillExtractor:
                 if normalized_domain:
                     domains.add(normalized_domain)
 
-        # Extract from matcher (chỉ còn SKILL_ROLE sau khi xóa SKILL_COMBO)
-        matches = self.matcher(doc)
-        for match_id, start, end in matches:
-            span = doc[start:end]
-            match_label = self.nlp.vocab.strings[match_id]
-
-            if match_label == "SKILL_ROLE":
-                # Chỉ lấy PROPN tokens — tránh bắt "developer", "engineer" vào skills
-                skill_part = " ".join([token.text for token in span if token.pos_ == "PROPN"])
-                if skill_part:
-                    skills.add(skill_part)
+        # Extract from matcher (removed)
+        # matches = self.matcher(doc)
 
         # [FIX #4] PROPN heuristic đã bị xóa.
         # Heuristic cũ: nếu PROPN đứng trước "api/sdk/framework/library/database" thì add vào skills.
