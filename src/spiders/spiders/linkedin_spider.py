@@ -499,7 +499,7 @@ class LinkedinSpider(BaseJobSpider):
         if desc_elem:
             # Get all text from description
             description_texts = desc_elem.css('::text').getall()
-            description = ' '.join([t.strip() for t in description_texts if t.strip()])
+            description = '\n'.join([t.strip() for t in description_texts if t.strip()])
 
             item['description'] = description
             # Also save to requirements as LinkedIn doesn't separate sections
