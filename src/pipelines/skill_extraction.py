@@ -1,7 +1,7 @@
 """
 SkillExtractionPipeline
 
-Chạy sau CleaningPipeline (200) và trước DeduplicationPipeline (300).
+Chạy sau DeduplicationPipeline (250) và trước DatabasePipeline (400).
 Trích xuất skill + domain từ description/requirements bằng NLP (Spacy EntityRuler),
 sau đó merge vào skills_tags và extra_data['domains'] của item.
 

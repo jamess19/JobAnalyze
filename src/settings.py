@@ -105,12 +105,12 @@ DOWNLOADER_MIDDLEWARES = {
 
 # Configure item pipelines
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
-# Pipeline order: validation -> normalization -> deduplication -> export
+# Pipeline order: validation -> cleaning -> deduplication -> skill extraction -> database -> export
 ITEM_PIPELINES = {
    "pipelines.validation.ValidationPipeline": 100,
    "pipelines.cleaning.CleaningPipeline": 200,
-   "pipelines.skill_extraction.SkillExtractionPipeline": 250,  # NLP skill/domain extraction
-   "pipelines.deduplication.DeduplicationPipeline": 300,
+   "pipelines.deduplication.DeduplicationPipeline": 250,  # Dedup BEFORE NLP to save computation
+   "pipelines.skill_extraction.SkillExtractionPipeline": 300,  # NLP skill/domain extraction
    "pipelines.database.DatabasePipeline": 400,
    "pipelines.export.ExportPipeline": 500,
 }
