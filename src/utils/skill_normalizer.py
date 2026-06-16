@@ -707,6 +707,7 @@ def _build_synonym_map() -> dict[str, str]:
     aliases: dict[str, str] = {
         # --- Programming Languages ---
         "python3": "Python", "python2": "Python",
+        "java8": "Java", "java11": "Java", "java17": "Java", "java21": "Java",
         "golang": "Go",
         "c/c++": "C/C++",
         "objective-c": "Objective-C", "objectivec": "Objective-C",
@@ -1216,6 +1217,12 @@ class SkillNormalizer:
         # Direct lookup
         if key in self._synonym_map:
             return self._synonym_map[key]
+
+        # Fallback: try without spaces to handle Spacy multi-token patterns
+        # e.g. "Java 8" → "java8", "Angular 12" → "angular12", "Vue 2" → "vue2"
+        compact_key = key.replace(" ", "")
+        if compact_key != key and compact_key in self._synonym_map:
+            return self._synonym_map[compact_key]
 
         # Track unmapped skill frequency (silent — no per-call log spam)
         self._unmapped_counter[skill_text.strip()] += 1

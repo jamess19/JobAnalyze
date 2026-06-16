@@ -1375,6 +1375,12 @@ class SkillExtractor:
         if skill_lower in normalization_map:
             return normalization_map[skill_lower]
         
+        # Fallback: try without spaces to handle Spacy multi-token patterns
+        # e.g. ent.text="Java 8" → key="java8", ent.text="Angular 12" → key="angular12"
+        compact_key = skill_lower.replace(" ", "")
+        if compact_key != skill_lower and compact_key in normalization_map:
+            return normalization_map[compact_key]
+        
         # Default: return as-is but handle some capitalization
         if skill_text == "Go":
             return "Go"
