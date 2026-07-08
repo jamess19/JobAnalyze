@@ -1,0 +1,27 @@
+============ HƯỚNG DẪN SỬ DỤNG ============
+
+1. CHUẨN BỊ MÔI TRƯỜNG TRƯỚC KHI BIÊN DỊCH VÀ CHẠY:
+- Kích hoạt lại môi trường ảo nếu bạn đã tắt Terminal trước đó:
+  + Trên Windows: .\.venv\Scripts\activate
+  + Trên macOS/Linux: source .venv/bin/activate
+
+2. KHỞI ĐỘNG CƠ SỞ DỮ LIỆU:
+Dự án sử dụng cơ sở dữ liệu TimescaleDB. Để khởi động hệ thống CSDL:
+- Mở Terminal và chạy lệnh:
+    docker-compose up -d
+  (Lệnh này sẽ tải và chạy Docker container chứa PostreSQL/TimescaleDB. Đợi báo "Started" là được).
+
+3. BIÊN DỊCH VÀ CHẠY CHƯƠNG TRÌNH ROOT:
+- Hướng dẫn cấu hình tìm kiếm: Bạn có thể thay đổi từ khoá, số trang, hoặc địa điểm cần quét ngay trong file `src/config/config.py` trước khi chạy.
+- Chạy hệ thống thu thập toàn phần (Chạy tất cả 3 trang: ITViec, TopCV, LinkedIn):
+    python src/main.py
+
+- Nếu bạn chỉ muốn chạy riêng lẻ từng Spider (dữ liệu từng nền tảng), hãy dùng tham số `--spider`:
+    python src/main.py --spider itviec
+    python src/main.py --spider topcv
+    python src/main.py --spider linkedin
+
+4. KIỂM TRA KẾT QUẢ ĐẦU RA:
+- Logs quá trình chạy sẽ được in trực tiếp ra Terminal, đồng thời lưu tại thư mục `src/logs/`.
+- File kết quả (CSV / JSON / Excel) tự động được xuất ra nằm trong thư mục `src/data/`.
+- (Tùy chọn) Google Drive Upload: Nếu cấu hình OAuth 2.0 hợp lệ trong `.env`, hệ thống sẽ tự động upload file kết quả lên thư mục Google Drive của bạn.

@@ -54,7 +54,6 @@ class GoogleDriveUploader(BaseUploader):
         }
         
         file_path = os.path.abspath(file_path)
-        print(f"File path: {file_path}")
         # Định nghĩa MediaUpload object
         media = MediaFileUpload(file_path, mimetype='text/csv', resumable=True)
         

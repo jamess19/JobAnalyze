@@ -19,8 +19,6 @@ warnings.filterwarnings("ignore", message=r".*requires a spider argument.*", cat
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 env_path = os.path.join(base_dir, '.env')
-print(f"[DEBUG] Loading .env from: {env_path}")
-print(f"[DEBUG] File exists: {os.path.exists(env_path)}")
 
 load_dotenv(env_path, override=True, verbose=True)  # verbose=True để debug
 
@@ -82,11 +80,6 @@ DEFAULT_REQUEST_HEADERS = {
    "Upgrade-Insecure-Requests": "1",
 }
 
-# Enable or disable spider middlewares
-# See https://docs.scrapy.org/en/latest/topics/spider-middleware.html
-#SPIDER_MIDDLEWARES = {
-#    "spiders.middlewares.SpidersSpiderMiddleware": 543,
-#}
 
 # Enable or disable downloader middlewares
 # See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
@@ -97,11 +90,6 @@ DOWNLOADER_MIDDLEWARES = {
    "spiders.middlewares.SpidersDownloaderMiddleware": 543,
 }
 
-# Enable or disable extensions
-# See https://docs.scrapy.org/en/latest/topics/extensions.html
-#EXTENSIONS = {
-#    "scrapy.extensions.telnet.TelnetConsole": None,
-#}
 
 # Configure item pipelines
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
@@ -218,21 +206,6 @@ logging.getLogger("scrapy.core.scraper").addFilter(_DropItemLogFilter())
 OUTPUT_DIR = "data"  # Changed from "data/output" to "data"
 SEEN_JOBS_FILE = "data/seen_jobs.txt"
 
-# Feed exports (alternative to ExportPipeline)
-# Uncomment to use Scrapy's built-in feed exports instead
-# FEEDS = {
-#     'data/output/%(name)s_%(time)s.csv': {
-#         'format': 'csv',
-#         'encoding': 'utf-8-sig',
-#         'overwrite': False,
-#     },
-#     'data/output/%(name)s_%(time)s.json': {
-#         'format': 'json',
-#         'encoding': 'utf-8',
-#         'indent': 2,
-#         'overwrite': False,
-#     },
-# }
 
 # Memory usage settings
 MEMUSAGE_ENABLED = True
