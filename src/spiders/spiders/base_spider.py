@@ -279,6 +279,17 @@ class BaseJobSpider(scrapy.Spider):
             f"  Success rate: {self.jobs_scraped / max(self.jobs_scraped + self.jobs_failed, 1) * 100:.2f}%"
         )
 
+    # ── Scrapy 2.13+ compatibility ──────────────────────────────────
+    # Scrapy 2.13 replaced the synchronous start_requests() with an
+    # async start() method.  The default Spider.start() iterates
+    # self.start_urls with plain Request objects, so our custom
+    # start_requests() (which adds Playwright meta, pagination, etc.)
+    # is never called unless we bridge it here.
+    async def start(self):
+        """Bridge: delegate to the synchronous start_requests() generator."""
+        for req in self.start_requests():
+            yield req
+
     # Abstract methods to be implemented by subclasses
     @abstractmethod
     def start_requests(self):
