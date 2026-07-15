@@ -37,8 +37,15 @@ datasketch>=1.6.4
 scrapy>=2.11.0
 scrapy-playwright>=0.0.36
 
+# Brotli decompression (required by Scrapy HttpCompressionMiddleware
+# to decode 'br' encoding used by many modern websites)
+brotli>=1.1.0
+
 # NLP for skill extraction
 spacy>=3.7.0
 
 # Environment variable management
 python-dotenv>=1.0.0
+
+# CLI dependency required by spaCy download commands
+click>=8.0.0
