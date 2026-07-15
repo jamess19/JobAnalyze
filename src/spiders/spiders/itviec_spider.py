@@ -32,10 +32,11 @@ class ItviecSpider(BaseJobSpider):
     DATE_FOLLOW_DAYS    = 2    # follow detail page only if posted_date >= T - N days
     DATE_STOP_DAYS      = 3    # stop pagination if posted_date < T - N days
 
-    def __init__(self, *args, start_url: str = None, **kwargs):
+    def __init__(self, *args, start_url: str = None, max_pages: int = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.base_url     = 'https://itviec.com'
         self.start_url    = start_url or 'https://itviec.com/it-jobs'
+        self.max_pages    = int(max_pages) if max_pages else None  # giới hạn số trang search (None = không giới hạn)
         self._max_date    = None          # T = max(posted_date) from DB, set in start_requests()
 
         # Dedup/stop counters – manipulated by DeduplicationPipeline
@@ -255,6 +256,9 @@ class ItviecSpider(BaseJobSpider):
 
         # --- Prepare next page request (will be triggered after all details finish) ---
         self._next_page_request = None
+        if self.max_pages and page >= self.max_pages:
+            self.logger.info(f"Reached max_pages={self.max_pages}, stopping pagination.")
+            stop_pagination = True
         if not stop_pagination and not self.should_stop:
             next_page = page + 1
             next_url = self._paginate_url(base_search_url, next_page)

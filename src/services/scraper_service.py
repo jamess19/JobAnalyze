@@ -31,19 +31,21 @@ class ScraperService:
                 continue
 
             if config.get("urls"):
+                max_pages = config.get("max_pages")
                 if spider_name == "topcv":
                     # TopCV: single instance processes all URLs sequentially
-                    process.crawl(spider_class, start_urls=config["urls"])
+                    process.crawl(spider_class, start_urls=config["urls"], max_pages=max_pages)
                 else:
                     # Other spiders: one instance per URL (parallel)
                     for url in config["urls"]:
-                        process.crawl(spider_class, start_url=url)
+                        process.crawl(spider_class, start_url=url, max_pages=max_pages)
             elif config.get("keywords"):
                 # Keyword-based crawl: ONE spider instance handles all keywords sequentially
                 process.crawl(
                     spider_class,
                     keywords=config["keywords"],
                     location=config.get("location", ""),
+                    max_pages=config.get("max_pages"),
                 )
 
         process.start()

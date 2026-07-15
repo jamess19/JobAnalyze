@@ -50,12 +50,13 @@ class TopcvSpider(BaseJobSpider):
         'RETRY_HTTP_CODES': [500, 502, 503, 504, 403],  # 429/403 also handled by RateLimitBackoffMiddleware
     }
 
-    def __init__(self, start_url: str = None, start_urls: list = None, *args, **kwargs):
+    def __init__(self, start_url: str = None, start_urls: list = None, max_pages: int = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.base_url = "https://www.topcv.vn"
         self.seen_jobs = set()
         self.start_url = start_url  # Direct URL to crawl (overrides keyword slug)
         self._start_urls = start_urls or ([start_url] if start_url else [])  # Sequential URL list
+        self.max_pages = int(max_pages) if max_pages else None  # giới hạn số trang search mỗi URL (None = không giới hạn)
 
         # Unique Playwright browser context per run → fresh cookies/session each time
         self._playwright_ctx = f"topcv_{uuid.uuid4().hex[:10]}"
@@ -314,6 +315,9 @@ class TopcvSpider(BaseJobSpider):
 
         # --- Prepare next page request (triggered after all details finish) ---
         self._next_page_request = None
+        if self.max_pages and page >= self.max_pages:
+            self.logger.info(f"Reached max_pages={self.max_pages}, stopping pagination.")
+            stop_pagination = True
         if not stop_pagination and not self.should_stop:
             next_page = page + 1
             next_url = self._paginate_url(base_search_url, next_page)

@@ -37,7 +37,9 @@ class LinkedinSpider(BaseJobSpider):
     # Smart crawl settings
     MAX_CONSECUTIVE_DUPS = 15
 
-    def __init__(self, keywords=None, *args, **kwargs):
+    def __init__(self, keywords=None, max_pages: int = None, *args, **kwargs):
+        self.max_pages = int(max_pages) if max_pages else None  # giới hạn số trang API mỗi keyword (None = không giới hạn)
+
         # Accept either keywords (list) from ScraperService or keyword (str) from run_spiders.py
         if keywords and isinstance(keywords, list):
             self.keywords = keywords
@@ -385,6 +387,11 @@ class LinkedinSpider(BaseJobSpider):
 
         self.logger.info(f"[{keyword}] First page: {queued} cards queued.")
 
+        # ── max_pages: page 1 is this Playwright-loaded page; stop here if limited to 1 ──
+        if self.max_pages and self.max_pages <= 1:
+            self.logger.info(f"[{keyword}] Reached max_pages={self.max_pages}, stopping pagination.")
+            return
+
         # ── Chain to first API page (start=PAGE_SIZE) ──
         first_start = self._PAGE_SIZE
         if first_start < target_count:
@@ -440,6 +447,12 @@ class LinkedinSpider(BaseJobSpider):
             yield req
 
         self.logger.info(f"[{keyword}] API page start={start}: {queued} cards queued for detail.")
+
+        # ── max_pages: start=PAGE_SIZE is page 2 (page 1 = initial Playwright load) ──
+        current_page = (start // self._PAGE_SIZE) + 1
+        if self.max_pages and current_page >= self.max_pages:
+            self.logger.info(f"[{keyword}] Reached max_pages={self.max_pages}, stopping pagination.")
+            return
 
         # ── Chain to next page (if not stopped and within target) ──
         next_start = start + self._PAGE_SIZE

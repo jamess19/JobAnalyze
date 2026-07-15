@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\".venv/Scripts/python.exe\" -c \"import scrapy_playwright; print\\(scrapy_playwright.__file__\\)\")",
+      "Bash(pip show *)",
+      "Bash(\".venv/Scripts/pip.exe\" list *)",
+      "Bash(\".venv/Scripts/pip.exe\" index *)",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(\".venv/Scripts/python.exe\" src/main.py --spider linkedin --keyword \"Data Analyst\" --max-pages 1)",
+      "Bash(echo \"EXIT_CODE=$?\")"
+    ]
+  }
+}
