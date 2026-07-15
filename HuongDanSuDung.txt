@@ -25,7 +25,7 @@ Dự án sử dụng cơ sở dữ liệu TimescaleDB. Để khởi động hệ
 - Nếu chỉ muốn test nhanh (không phải chờ crawl toàn bộ web), dùng tham số `--max-pages` để giới hạn số trang danh sách:
     python src/main.py --spider itviec --max-pages 1     (chỉ crawl trang kết quả đầu tiên)
     python src/main.py --spider topcv --url "https://www.topcv.vn/tim-viec-lam-software-engineering-cr257cb258?sort=new&type_keyword=1&category_family=r257~b258&saturday_status=0&sba=1" --max-pages 1
-
+    python src/main.py --spider linkedin --keyword "Data Analyst" --max-pages 1
 4. KIỂM TRA KẾT QUẢ ĐẦU RA:
 - Logs quá trình chạy sẽ được lưu tại thư mục `src/logs/`.
 - File kết quả (CSV / JSON / Excel) tự động được xuất ra nằm trong thư mục `src/data/`.
