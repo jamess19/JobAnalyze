@@ -6,9 +6,11 @@
 # Python cache
 __pycache__/
 *.pyc
+*.egg-info/
 
 # System files
 .DS_Store
 
 # Virtual environment
 .venv/
+.env

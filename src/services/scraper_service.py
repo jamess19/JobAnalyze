@@ -1,3 +1,5 @@
+import os
+
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 
@@ -18,6 +20,7 @@ class ScraperService:
 
     def run(self):
         """Run all configured spiders. Pipeline handles everything."""
+        os.makedirs("logs", exist_ok=True)
         settings = get_project_settings()
         process = CrawlerProcess(settings)
 
