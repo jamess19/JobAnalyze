@@ -139,25 +139,31 @@ SELECT add_continuous_aggregate_policy('domain_daily_stats',
     end_offset => INTERVAL '1 hour',
     schedule_interval => INTERVAL '2 hours');
 
--- =====================================================
-CALL refresh_continuous_aggregate(
-    'skill_daily_stats',
-    '2024-01-01', -- Ngày bắt đầu muốn tính
-    '2027-01-01'  -- Ngày kết thúc (cho tương lai để bao trọn hôm nay)
-);
+-- ====================================================
+-- 7. AI MARKET INSIGHTS — READ-ONLY ROLE
+-- ====================================================
+-- Used by src/ai/insight_engine.py to execute LLM-generated SQL.
+-- This role is the real security boundary for that feature (not the
+-- app-level guard in sql_guard.py): even if a generated query slips
+-- past the guard, this role physically cannot INSERT/UPDATE/DELETE/DROP.
+-- Change the password below before using this outside a local demo.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'ai_readonly') THEN
+        CREATE ROLE ai_readonly WITH LOGIN PASSWORD 'ai_readonly_change_me';
+    END IF;
+END
+$$;
 
-truncate job_skills, jobs, lsh_buckets cascade;
+GRANT CONNECT ON DATABASE job_market TO ai_readonly;
+GRANT USAGE ON SCHEMA public TO ai_readonly;
+GRANT SELECT ON
+    jobs, locations, skills, domains,
+    job_skills, job_domain,
+    skill_daily_stats, domain_daily_stats
+TO ai_readonly;
+-- No INSERT/UPDATE/DELETE/DDL privileges are ever granted to this role.
 
-CALL refresh_continuous_aggregate(
-    'skill_daily_stats', 
-    NULL, 
-    NULL
-);
-CALL refresh_continuous_aggregate(
-    'domain_daily_stats', 
-    NULL, 
-    NULL
-);
-COPY (SELECT * FROM jobs) 
-TO 'D:\jobs.csv' -- Hoặc đường dẫn file trên server
-WITH (FORMAT CSV, HEADER);
+-- Read-only doesn't mean cheap: a single expensive SELECT (recursive CTE,
+-- unconstrained cross join, pg_sleep()) can still exhaust the DB. Cap it.
+ALTER ROLE ai_readonly SET statement_timeout = '5s';

@@ -12,3 +12,9 @@ __pycache__/
 
 # Virtual environment
 .venv/
+
+# Secrets
+.env
+
+# Generated eval run artifacts (regenerable, timestamped)
+eval/report_*.md
