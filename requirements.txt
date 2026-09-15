@@ -42,3 +42,6 @@ spacy>=3.7.0
 
 # Environment variable management
 python-dotenv>=1.0.0
+
+# YAML parsing for the AI Market Insights eval harness golden question set
+PyYAML>=6.0.0
